@@ -195,6 +195,123 @@ async def tool_gene_analysis(gene_set: str) -> str:
             agent.sandbox = None
 
 
+async def tool_trialgpt_match(patient_note: str) -> str:
+    """Match a patient to clinical trials using TrialGPT.
+
+    Two-stage workflow:
+    1. Extract key medical info from the patient note; search ClinicalTrials.gov.
+    2. Rank candidate trials by eligibility with detailed rationale.
+
+    Args:
+        patient_note: Free-text clinical note describing the patient's condition,
+            demographics, biomarkers, treatment history, etc.
+    """
+    from biodsa.agents.trialgpt.agent import TrialGPTAgent
+
+    agent = None
+    try:
+        agent = TrialGPTAgent(**_agent_kwargs())
+        results = agent.go(patient_note=patient_note)
+        return _fmt_results(results)
+    except Exception:
+        logging.error("TrialGPTAgent failed: %s", traceback.format_exc())
+        return f"Error: {traceback.format_exc()}"
+    finally:
+        _clear_sandbox_workspace()
+        if agent is not None:
+            agent.sandbox = None
+
+
+async def tool_clinical_risk(patient_note: str, query: str = "") -> str:
+    """Clinical risk prediction using AgentMD's 2,164+ clinical calculators.
+
+    Two-step workflow: select appropriate calculators, then compute risk scores.
+
+    Args:
+        patient_note: Clinical note with patient demographics, vitals, labs, history.
+        query: Optional specific clinical question (e.g. "Calculate TIMI risk score").
+    """
+    from biodsa.agents.agentmd.agent import AgentMD
+
+    agent = None
+    try:
+        kwargs = _agent_kwargs()
+        agent = AgentMD(**kwargs)
+        go_kwargs = {"patient_note": patient_note}
+        if query:
+            go_kwargs["query"] = query
+        results = agent.go(**go_kwargs)
+        return _fmt_results(results)
+    except Exception:
+        logging.error("AgentMD failed: %s", traceback.format_exc())
+        return f"Error: {traceback.format_exc()}"
+    finally:
+        _clear_sandbox_workspace()
+        if agent is not None:
+            agent.sandbox = None
+
+
+async def tool_dswizard_analyze(task: str, workspace_dir: str = "") -> str:
+    """Biomedical data analysis with DSWizard (planning → implementation).
+
+    Use for: statistical analysis, survival analysis, differential expression,
+    data visualization on biomedical datasets (CSV/TSV).
+
+    Args:
+        task: Analysis description. E.g. "Perform survival analysis for TP53
+              mutant vs wild-type patients in the BRCA dataset."
+        workspace_dir: Local directory with CSV/TSV files to analyse.
+    """
+    from biodsa.agents.dswizard.agent import DSWizardAgent
+
+    agent = None
+    try:
+        kwargs = _agent_kwargs()
+        _get_sandbox_container_id()
+        agent = DSWizardAgent(**kwargs)
+        if workspace_dir:
+            agent.register_workspace(workspace_dir)
+        results = agent.go(task)
+        return _fmt_results(results)
+    except Exception:
+        logging.error("DSWizardAgent failed: %s", traceback.format_exc())
+        return f"Error: {traceback.format_exc()}"
+    finally:
+        _clear_sandbox_workspace()
+        if agent is not None:
+            agent.sandbox = None
+
+
+async def tool_meta_analysis(research_question: str, target_outcomes: Optional[List[str]] = None) -> str:
+    """Systematic review and meta-analysis via SLR-Meta agent.
+
+    Searches PubMed and ClinicalTrials.gov, screens studies, extracts data,
+    and performs meta-analysis where appropriate.
+
+    Args:
+        research_question: The research question for the meta-analysis.
+        target_outcomes: Optional list of outcomes for data extraction.
+    """
+    from biodsa.agents.slr_meta.agent import SLRMetaAgent
+
+    agent = None
+    try:
+        kwargs = _agent_kwargs()
+        agent = SLRMetaAgent(**kwargs)
+        go_kwargs = {"research_question": research_question}
+        if target_outcomes:
+            go_kwargs["target_outcomes"] = target_outcomes
+        results = agent.go(**go_kwargs)
+        return _fmt_results(results)
+    except Exception:
+        logging.error("SLRMetaAgent failed: %s", traceback.format_exc())
+        return f"Error: {traceback.format_exc()}"
+    finally:
+        _clear_sandbox_workspace()
+        if agent is not None:
+            agent.sandbox = None
+
+
 # ---------------------------------------------------------------------------
 # Server entry point
 # ---------------------------------------------------------------------------
@@ -297,6 +414,79 @@ def main() -> None:
                     "required": ["gene_set"],
                 },
             ),
+            Tool(
+                name="biodsa_trialgpt_match",
+                description="Match a patient to clinical trials using TrialGPT. "
+                "Two-stage: extract medical info from note → rank candidate trials by eligibility with rationale.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "patient_note": {
+                            "type": "string",
+                            "description": "Free-text clinical note with condition, demographics, biomarkers, treatment history.",
+                        },
+                    },
+                    "required": ["patient_note"],
+                },
+            ),
+            Tool(
+                name="biodsa_clinical_risk",
+                description="Clinical risk prediction using AgentMD's 2,164+ clinical calculators. "
+                "Selects appropriate calculators then computes risk scores.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "patient_note": {
+                            "type": "string",
+                            "description": "Clinical note with patient vitals, labs, history, medications.",
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Optional specific question. E.g. 'Calculate TIMI risk score'.",
+                        },
+                    },
+                    "required": ["patient_note"],
+                },
+            ),
+            Tool(
+                name="biodsa_dswizard_analyze",
+                description="Biomedical data analysis with DSWizard (planning → implementation). "
+                "Use for: statistical analysis, survival analysis, differential expression, data visualization.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "Analysis description. E.g. 'Perform survival analysis for TP53 mutant vs wild-type in BRCA dataset.'",
+                        },
+                        "workspace_dir": {
+                            "type": "string",
+                            "description": "Optional local directory path with CSV/TSV files to analyse.",
+                        },
+                    },
+                    "required": ["task"],
+                },
+            ),
+            Tool(
+                name="biodsa_meta_analysis",
+                description="Systematic review and meta-analysis via SLR-Meta agent. "
+                "Searches PubMed/ClinicalTrials.gov, screens studies, extracts data, performs meta-analysis.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "research_question": {
+                            "type": "string",
+                            "description": "Research question for meta-analysis.",
+                        },
+                        "target_outcomes": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional outcomes for data extraction.",
+                        },
+                    },
+                    "required": ["research_question"],
+                },
+            ),
         ]
 
     @app.call_tool()
@@ -305,6 +495,10 @@ def main() -> None:
             "biodsa_deepevidence_research": tool_deepevidence_research,
             "biodsa_systematic_review": tool_systematic_review,
             "biodsa_gene_analysis": tool_gene_analysis,
+            "biodsa_trialgpt_match": tool_trialgpt_match,
+            "biodsa_clinical_risk": tool_clinical_risk,
+            "biodsa_dswizard_analyze": tool_dswizard_analyze,
+            "biodsa_meta_analysis": tool_meta_analysis,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -347,7 +541,7 @@ def main() -> None:
 
     logging.info("BioDSA MCP server starting on http://%s:%d (SSE)", args.mcp_host, args.mcp_port)
     logging.info("Model: %s  |  LLM endpoint: %s", args.model, _config.endpoint)
-    logging.info("Tools: deepevidence_research, systematic_review, gene_analysis")
+    logging.info("Tools: deepevidence_research, systematic_review, gene_analysis, trialgpt_match, clinical_risk, dswizard_analyze, meta_analysis")
 
     uvicorn.run(starlette, host=args.mcp_host, port=args.mcp_port, log_level=args.log_level.lower())
 
