@@ -106,11 +106,23 @@ def main() -> None:
         t0 = time.time()
         completion = test_chat_completion(base_url, args.model, args.timeout)
         elapsed = time.time() - t0
-        content = completion["choices"][0]["message"]["content"].strip()
+        choice = completion["choices"][0]
+        message = choice.get("message", {})
+        content = message.get("content") or ""
+        reasoning = message.get("reasoning_content", "")
+        finish_reason = choice.get("finish_reason", "?")
         usage = completion.get("usage", {})
-        print(f"  OK  ({elapsed:.2f}s)")
-        print(f"  Response: {content}")
-        print(f"  Tokens:   prompt={usage.get('prompt_tokens', '?')}, "
+        print(f"  OK  ({elapsed:.2f}s)  finish_reason={finish_reason}")
+        if content.strip():
+            print(f"  Content:   {content.strip()}")
+        elif reasoning:
+            print(f"  Reasoning: {reasoning[:300]}...")
+            print(f"  (model returned reasoning_content only, no final content)")
+        else:
+            print(f"  Warning: empty response content")
+            print(f"  Raw message keys: {list(message.keys())}")
+            print(f"  Raw message: {json.dumps(message, ensure_ascii=False)[:500]}")
+        print(f"  Tokens:    prompt={usage.get('prompt_tokens', '?')}, "
               f"completion={usage.get('completion_tokens', '?')}")
     except urllib.error.HTTPError as e:
         body = e.read().decode() if e.fp else ""
