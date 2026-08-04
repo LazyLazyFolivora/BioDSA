@@ -112,7 +112,7 @@ def main() -> None:
 
     mcp.settings.host = "0.0.0.0"
     mcp.settings.port = args.mcp_port
-    mcp.run(transport="sse")
+    mcp.run(transport="http")
 
 
 if __name__ == "__main__":
