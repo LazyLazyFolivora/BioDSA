@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(New-Item *)",
+      "PowerShell(Get-ChildItem -Recurse -File -Path biodsa/mcp, scripts/start_mcp_server.py, mcp_configs, tutorials/mcp_local_model.md | ForEach-Object { Write-Output \"--- $\\($_.FullName\\) ---\" })"
+    ]
+  }
+}

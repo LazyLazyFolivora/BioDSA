@@ -220,6 +220,14 @@ class BaseAgent():
                 max_retries=0,
                 **kwargs
             )
+        elif (api == "local"):
+            llm = ChatOpenAI(
+                model=model_name,
+                api_key=api_key or "not-needed",
+                base_url=endpoint,
+                max_retries=0,
+                **kwargs
+            )
         else:
             raise ValueError(f"Invalid API: {api}")
         return llm
@@ -317,10 +325,15 @@ class BaseAgent():
             model_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 5000}
             model_kwargs["max_tokens"] = 10000
             model_kwargs.pop("reasoning_effort", None)
-        if "gpt" in model_name.lower():
+        elif "gpt" in model_name.lower():
             model_kwargs["reasoning_effort"] = "medium"
             model_kwargs.pop("thinking", None)
             model_kwargs["max_completion_tokens"] = 5000
+        else:
+            # Local / other models: strip provider-specific kwargs
+            model_kwargs.pop("thinking", None)
+            model_kwargs.pop("reasoning_effort", None)
+            model_kwargs["max_completion_tokens"] = 4096
         return model_kwargs
 
     # ------------------------------------------------------------------

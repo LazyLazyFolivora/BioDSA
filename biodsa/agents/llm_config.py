@@ -2,9 +2,9 @@
 Central config for supported LLM API types and model names.
 
 Used by BaseAgent and others for type hints and validation.
-Support: OpenAI, Anthropic, Google, Azure (OpenAI-compatible).
+Support: OpenAI, Anthropic, Google, Azure (OpenAI-compatible), local (vLLM / Ollama OpenAI-compatible).
 
-Last updated: 2026-02-12
+Last updated: 2026-08-04
 """
 from typing import Literal
 
@@ -12,8 +12,8 @@ from typing import Literal
 # API types
 # ---------------------------------------------------------------------------
 
-SUPPORTED_API_TYPES = ("openai", "anthropic", "google", "azure")
-SupportedApiType = Literal["openai", "anthropic", "google", "azure"]
+SUPPORTED_API_TYPES = ("openai", "anthropic", "google", "azure", "local")
+SupportedApiType = Literal["openai", "anthropic", "google", "azure", "local"]
 
 # ---------------------------------------------------------------------------
 # Model names by provider (canonical API IDs / deployment names)
@@ -129,8 +129,19 @@ AZURE_MODELS = (
 # Combined set and Literal type for model_name
 # ---------------------------------------------------------------------------
 
+# Local (vLLM / Ollama OpenAI-compatible endpoints — add your model names here)
+LOCAL_MODELS = (
+    # vLLM examples:
+    # "meta-llama/Llama-3.1-8B-Instruct",
+    # "mistralai/Mistral-7B-Instruct-v0.3",
+    # "deepseek-ai/DeepSeek-R1",
+    # Ollama examples:
+    # "deepseek-r1:8b",
+    # "qwen2.5:7b",
+)
+
 ALL_SUPPORTED_MODELS = frozenset(
-    OPENAI_MODELS + ANTHROPIC_MODELS + GOOGLE_MODELS + AZURE_MODELS
+    OPENAI_MODELS + ANTHROPIC_MODELS + GOOGLE_MODELS + AZURE_MODELS + LOCAL_MODELS
 )
 
 # Literal type for type checkers and IDEs
@@ -209,4 +220,9 @@ SupportedModelName = Literal[
     "gemini-pro",
     # Azure deployment names (extras)
     "gpt-35-turbo",
+    # Local — vLLM / Ollama examples (add your model names here)
+    # "meta-llama/Llama-3.1-8B-Instruct",
+    # "deepseek-ai/DeepSeek-R1",
+    # "deepseek-r1:8b",
+    # "qwen2.5:7b",
 ]
