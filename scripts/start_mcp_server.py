@@ -112,7 +112,8 @@ def main() -> None:
 
     mcp.settings.host = "0.0.0.0"
     mcp.settings.port = args.mcp_port
-    mcp.run(transport="http")
+    mcp.settings.allowed_hosts = ["*"]  # Allow Docker internal hosts
+    mcp.run(transport="sse")
 
 
 if __name__ == "__main__":
