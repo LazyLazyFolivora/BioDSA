@@ -292,7 +292,7 @@ class BaseAgent():
         if tools is None:
             tools = []
         if model_kwargs is None:
-            model_kwargs = self.model_kwargs
+            model_kwargs = self.model_kwargs or {}
         else:
             model_kwargs = self._set_model_kwargs(model_name)
         if api_type is None:
