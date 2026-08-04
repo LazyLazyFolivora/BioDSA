@@ -221,6 +221,11 @@ class BaseAgent():
                 **kwargs
             )
         elif (api == "local"):
+            # Local vLLM — strip cloud-provider-specific kwargs
+            kwargs.pop("reasoning_effort", None)
+            kwargs.pop("thinking", None)
+            kwargs.pop("max_completion_tokens", None)
+            kwargs.setdefault("max_tokens", 4096)
             llm = ChatOpenAI(
                 model=model_name,
                 api_key=api_key or "not-needed",
@@ -333,7 +338,8 @@ class BaseAgent():
             # Local / other models: strip provider-specific kwargs
             model_kwargs.pop("thinking", None)
             model_kwargs.pop("reasoning_effort", None)
-            model_kwargs["max_completion_tokens"] = 4096
+            model_kwargs.pop("max_completion_tokens", None)
+            model_kwargs["max_tokens"] = 4096
         return model_kwargs
 
     # ------------------------------------------------------------------
