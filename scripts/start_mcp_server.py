@@ -110,8 +110,7 @@ def main() -> None:
     logging.info("Model: %s  |  LLM endpoint: %s", args.model, config.endpoint)
     logging.info("Sandbox image: %s", args.sandbox_image)
 
-    os.environ["MCP_PORT"] = str(args.mcp_port)
-    mcp.run(transport="sse")
+    mcp.run(transport="sse", host="0.0.0.0", port=args.mcp_port)
 
 
 if __name__ == "__main__":
