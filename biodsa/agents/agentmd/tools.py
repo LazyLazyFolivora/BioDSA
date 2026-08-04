@@ -9,7 +9,10 @@ These tools enable AgentMD to:
 # IMPORTANT: Apply nest_asyncio FIRST before any other imports
 # This is required for Jupyter notebooks and LangGraph which run their own event loops
 import nest_asyncio
-nest_asyncio.apply()
+try:
+    nest_asyncio.apply()
+except RuntimeError:
+    pass
 
 import warnings
 warnings.filterwarnings("ignore", message="coroutine .* was never awaited", category=RuntimeWarning)
