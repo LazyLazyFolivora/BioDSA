@@ -316,8 +316,8 @@ def main() -> None:
     # SSE transport + Starlette
     sse = SseServerTransport("/messages")
 
-    async def handle_sse(request):
-        async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
+    async def handle_sse(scope, receive, send):
+        async with sse.connect_sse(scope, receive, send) as streams:
             await app.run(streams[0], streams[1], app.create_initialization_options())
 
     async def health(request):
@@ -330,9 +330,6 @@ def main() -> None:
         ]
     )
 
-    # Inject the SSE handler — Starlette doesn't have a built-in SSE route,
-    # so we hook it in as a raw ASGI middleware for the /sse path.
-    from starlette.middleware import Middleware
     from starlette.types import ASGIApp, Scope, Receive, Send
 
     class SSEMiddleware:
