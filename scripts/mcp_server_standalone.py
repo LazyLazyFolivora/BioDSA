@@ -14,6 +14,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 import traceback
 from typing import Optional, List
 
@@ -75,20 +76,26 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
     from biodsa.agents.deepevidence.agent import DeepEvidenceAgent
 
     agent = None
+    t_start = time.time()
     try:
         kwargs = _agent_kwargs()
         kwargs.setdefault("small_model_name", _config.model_name)
         kwargs.setdefault("small_model_api_type", "local")
         kwargs.setdefault("small_model_api_key", _config.api_key)
         kwargs.setdefault("small_model_endpoint", _config.endpoint)
+        logging.info("DeepEvidence: creating agent for query=%s", research_question[:80])
         agent = DeepEvidenceAgent(**kwargs)
         go_kwargs = {"input_query": research_question}
         if knowledge_bases:
             go_kwargs["knowledge_bases"] = knowledge_bases
+        logging.info("DeepEvidence: agent.go() starting (kbs=%s)", go_kwargs.get("knowledge_bases", "all"))
         results = agent.go(**go_kwargs)
+        elapsed = time.time() - t_start
+        logging.info("DeepEvidence: agent.go() done in %.0fs", elapsed)
         return _fmt_results(results)
     except Exception:
-        logging.error("DeepEvidenceAgent failed: %s", traceback.format_exc())
+        elapsed = time.time() - t_start
+        logging.error("DeepEvidenceAgent failed after %.0fs: %s", elapsed, traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
         if agent is not None:
@@ -437,6 +444,9 @@ def main() -> None:
 
     @app.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+        t_start = time.time()
+        logging.info("MCP tool call: %s args=%s", name,
+                     {k: str(v)[:80] for k, v in arguments.items()})
         handlers = {
             "biodsa_deepevidence_research": tool_deepevidence_research,
             "biodsa_systematic_review": tool_systematic_review,
@@ -451,6 +461,9 @@ def main() -> None:
             raise ValueError(f"Unknown tool: {name}")
 
         result = await handler(**arguments)
+        elapsed = time.time() - t_start
+        result_preview = result[:150].replace('\n', ' ') if result else "(empty)"
+        logging.info("MCP tool done: %s in %.0fs result=%s", name, elapsed, result_preview)
         return [TextContent(type="text", text=result)]
 
     # SSE transport + Starlette

@@ -2,6 +2,7 @@ import os
 import logging
 import tempfile
 import tarfile
+import time
 from typing import Dict, Any, Callable, Literal, List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from langchain_core.language_models.base import BaseLanguageModel
@@ -311,11 +312,17 @@ class BaseAgent():
             endpoint=endpoint,
             **model_kwargs
         )
+        msg_count = len(messages)
+        tool_count = len(tools)
+        t0 = time.time()
+        logging.info("LLM call start: model=%s messages=%d tools=%d", model_name, msg_count, tool_count)
         if tools:
             llm_with_tools = llm.bind_tools(tools, parallel_tool_calls=parallel_tool_calls)
             response = run_with_retry(llm_with_tools.invoke, arg=messages, timeout=self.llm_timeout)
         else:
             response = run_with_retry(llm.invoke, arg=messages, timeout=self.llm_timeout)
+        elapsed = time.time() - t0
+        logging.info("LLM call done: %.1fs model=%s messages=%d", elapsed, model_name, msg_count)
         return response
 
     def _get_input_output_tokens(self, response: BaseMessage) -> Tuple[int, int]:
