@@ -110,18 +110,21 @@ class BaseAgent():
         **kwargs
     ):
 
-        # initialize the sandbox (set to None if Docker is not available or fails)
-        try:
-            self.sandbox = ExecutionSandboxWrapper(container_id=container_id)
-            dsa_tools_installed = self.install_biodsa_tools_in_sandbox()
-            if not dsa_tools_installed:
-                logging.warning("Failed to install biodsa.tools. Skipping sandbox.")
+        # initialize the sandbox (Docker must be explicitly enabled via env var)
+        if os.environ.get("BIODSA_USE_DOCKER", "").lower() in ("1", "true", "yes"):
+            try:
+                self.sandbox = ExecutionSandboxWrapper(container_id=container_id)
+                dsa_tools_installed = self.install_biodsa_tools_in_sandbox()
+                if not dsa_tools_installed:
+                    logging.warning("Failed to install biodsa.tools. Skipping sandbox.")
+                    self.sandbox = None
+                else:
+                    logging.info("Sandbox initialized successfully and biodsa.tools installed")
+            except Exception as e:
+                logging.warning(f"Failed to initialize sandbox: {str(e)}")
+                logging.warning("Tools will fall back to local execution when possible")
                 self.sandbox = None
-            else:
-                logging.info("Sandbox initialized successfully and biodsa.tools installed")
-        except Exception as e:
-            logging.warning(f"Failed to initialize sandbox: {str(e)}")
-            logging.warning("Tools will fall back to local execution when possible")
+        else:
             self.sandbox = None
         
         if self.sandbox is not None:

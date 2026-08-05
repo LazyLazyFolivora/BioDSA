@@ -119,7 +119,7 @@ def biodsa_deepevidence_research(
     research_question: str,
     knowledge_bases: Optional[List[str]] = None,
 ) -> str:
-    """Deep biomedical research across 17+ knowledge bases (PubMed, ChEMBL, etc.).
+    """Deep biomedical research across 10 knowledge bases.
 
     Uses a hierarchical orchestrator + BFS/DFS sub-agents to gather and
     synthesise evidence from multiple biomedical databases.
@@ -128,8 +128,9 @@ def biodsa_deepevidence_research(
         research_question: The research question. E.g.
             "What are the mechanisms of EGFR inhibitor resistance in NSCLC?"
         knowledge_bases: Optional list of knowledge bases to search.
-            Options: pubmed, chembl, uniprot, opentargets, ensembl,
-            cbioportal, reactome, etc. If omitted, all available are used.
+            Valid values: pubmed_papers, gene, disease, drug, variant,
+            clinical_trials, web_search, target, pathway, compound.
+            If omitted, all available are used.
     """
     from biodsa.agents.deepevidence.agent import DeepEvidenceAgent
 

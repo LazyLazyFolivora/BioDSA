@@ -113,7 +113,7 @@ python scripts/start_mcp_server.py \
 | MCP Tool | Agent | 用途 |
 |---|---|---|
 | `biodsa_dswizard_analyze` | DSWizard | 生物医学数据分析 |
-| `biodsa_deepevidence_research` | DeepEvidence | 17+ 知识库深度科研 |
+| `biodsa_deepevidence_research` | DeepEvidence | 10 知识库深度科研 |
 | `biodsa_trialgpt_match` | TrialGPT | 患者-临床试验匹配 |
 | `biodsa_gene_analysis` | GeneAgent | 基因集功能分析 |
 | `biodsa_clinical_risk` | AgentMD | 临床风险计算 |

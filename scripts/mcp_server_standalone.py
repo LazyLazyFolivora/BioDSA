@@ -60,7 +60,7 @@ def _fmt_results(results, max_code_len: int = 800) -> str:
 # ---------------------------------------------------------------------------
 
 async def tool_deepevidence_research(research_question: str, knowledge_bases: Optional[List[str]] = None) -> str:
-    """Deep biomedical research across 17+ knowledge bases (PubMed, ChEMBL, etc.).
+    """Deep biomedical research across 10 knowledge bases.
 
     Uses a hierarchical orchestrator + BFS/DFS sub-agents to gather and
     synthesise evidence from multiple biomedical databases.
@@ -69,7 +69,8 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
         research_question: The research question. E.g.
             "What are the mechanisms of EGFR inhibitor resistance in NSCLC?"
         knowledge_bases: Optional list of knowledge bases to search.
-            Options: pubmed, chembl, uniprot, opentargets, ensembl, etc.
+            Valid values: pubmed_papers, gene, disease, drug, variant,
+            clinical_trials, web_search, target, pathway, compound.
     """
     from biodsa.agents.deepevidence.agent import DeepEvidenceAgent
 
@@ -308,7 +309,7 @@ def main() -> None:
         return [
             Tool(
                 name="biodsa_deepevidence_research",
-                description="Deep biomedical research across 17+ knowledge bases (PubMed, ChEMBL, KEGG, etc.). "
+                description="Deep biomedical research across 10 knowledge bases. "
                 "Uses a hierarchical orchestrator + BFS/DFS sub-agents to gather and synthesise evidence. "
                 "Use for: drug repurposing, target identification, mechanism reasoning, evidence synthesis.",
                 inputSchema={
@@ -321,7 +322,9 @@ def main() -> None:
                         "knowledge_bases": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Optional list of knowledge bases to search.",
+                            "description": "Optional list of knowledge bases. "
+                            "Valid values: pubmed_papers, gene, disease, drug, variant, "
+                            "clinical_trials, web_search, target, pathway, compound.",
                         },
                     },
                     "required": ["research_question"],
