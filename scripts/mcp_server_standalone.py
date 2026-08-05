@@ -1,13 +1,17 @@
 #!/usr/bin/env python
 """
-Standalone MCP server for BioDSA using the official ``mcp`` SDK (SSE transport).
+Standalone MCP server for BioDSA using the official ``mcp`` SDK.
 
-This bypasses FastMCP's Host-header validation issues and is protocol-compatible
-with the ``mcp-go`` library used by WeKnora.
+Supports both SSE and Streamable HTTP transports. Streamable HTTP is recommended
+for long-running agent tasks to avoid the 60s SSE timeout in mcp-go clients.
 
 Usage:
     python scripts/mcp_server_standalone.py \\
         --model Qwen3.6-FP8 --llm-host 172.20.72.25 --llm-port 60000
+
+    python scripts/mcp_server_standalone.py \\
+        --model Qwen3.6-FP8 --llm-host 172.20.72.25 --llm-port 60000 \\
+        --transport streamable-http
 """
 
 import argparse
@@ -270,7 +274,7 @@ async def tool_meta_analysis(research_question: str, target_outcomes: Optional[L
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="BioDSA MCP Server (official SDK, SSE)")
+    p = argparse.ArgumentParser(description="BioDSA MCP Server (official SDK)")
     p.add_argument("--model", "-m", required=True, help="Model name in vLLM.")
     p.add_argument("--llm-host", default=os.environ.get("BIODSA_LLM_HOST", "localhost"))
     p.add_argument("--llm-port", type=int, default=int(os.environ.get("BIODSA_LLM_PORT", "8000")))
@@ -278,37 +282,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mcp-port", "-p", type=int, default=int(os.environ.get("BIODSA_MCP_PORT", "8765")))
     p.add_argument("--mcp-host", default="0.0.0.0")
     p.add_argument("--llm-timeout", type=float, default=120.0)
+    p.add_argument("--transport", default="sse", choices=["sse", "streamable-http"],
+                   help="MCP transport protocol (default: sse). "
+                        "streamable-http avoids the 60s SSE timeout in mcp-go clients.")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-
-    global _config
-    _config = MCPServerConfig(
-        llm_host=args.llm_host,
-        llm_port=args.llm_port,
-        model_name=args.model,
-        api_key=args.api_key,
-        mcp_port=args.mcp_port,
-        llm_timeout=args.llm_timeout,
-    )
-
+def _build_mcp_app():
+    """Build the MCP Server with all tool registrations."""
     from mcp.server.lowlevel import Server
-    from mcp.server.sse import SseServerTransport
     from mcp.types import Tool, TextContent
-    import uvicorn
-    from starlette.applications import Starlette
-    from starlette.routing import Mount, Route
-    from starlette.responses import Response
 
-    # Build MCP server with tools
     app = Server("BioDSA")
 
     @app.list_tools()
@@ -466,7 +451,18 @@ def main() -> None:
         logging.info("MCP tool done: %s in %.0fs result=%s", name, elapsed, result_preview)
         return [TextContent(type="text", text=result)]
 
-    # SSE transport + Starlette
+    return app
+
+
+def _serve_sse(app, args):
+    """Serve MCP via SSE transport."""
+    import uvicorn
+    from mcp.server.sse import SseServerTransport
+    from starlette.applications import Starlette
+    from starlette.routing import Mount, Route
+    from starlette.responses import Response
+    from starlette.types import ASGIApp, Scope, Receive, Send
+
     sse = SseServerTransport("/messages")
 
     async def handle_sse(scope, receive, send):
@@ -482,8 +478,6 @@ def main() -> None:
             Mount("/messages", app=sse.handle_post_message),
         ]
     )
-
-    from starlette.types import ASGIApp, Scope, Receive, Send
 
     class SSEMiddleware:
         def __init__(self, app: ASGIApp, sse_path: str = "/sse"):
@@ -503,6 +497,79 @@ def main() -> None:
     logging.info("Tools: deepevidence_research, systematic_review, gene_analysis, trialgpt_match, clinical_risk, dswizard_analyze, meta_analysis")
 
     uvicorn.run(starlette, host=args.mcp_host, port=args.mcp_port, log_level=args.log_level.lower())
+
+
+def _serve_streamable_http(app, args):
+    """Serve MCP via Streamable HTTP transport (avoids 60s SSE timeout)."""
+    import contextlib
+    import uvicorn
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.responses import Response
+    from starlette.types import ASGIApp, Scope, Receive, Send
+
+    session_manager = StreamableHTTPSessionManager(app)
+
+    async def health(request):
+        return Response("OK")
+
+    @contextlib.asynccontextmanager
+    async def lifespan(starlette_app):
+        async with session_manager.run():
+            yield
+
+    starlette = Starlette(
+        routes=[Route("/health", endpoint=health)],
+        lifespan=lifespan,
+    )
+
+    class StreamableHTTPMiddleware:
+        def __init__(self, app: ASGIApp, mgr: StreamableHTTPSessionManager, mcp_path: str = "/mcp"):
+            self.app = app
+            self.mgr = mgr
+            self.mcp_path = mcp_path
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            if scope["type"] == "http" and scope["path"] == self.mcp_path:
+                await self.mgr.handle_request(scope, receive, send)
+            else:
+                await self.app(scope, receive, send)
+
+    starlette.add_middleware(StreamableHTTPMiddleware, mgr=session_manager, mcp_path="/mcp")
+
+    logging.info("BioDSA MCP server starting on http://%s:%d (Streamable HTTP)", args.mcp_host, args.mcp_port)
+    logging.info("Model: %s  |  LLM endpoint: %s", args.model, _config.endpoint)
+    logging.info("Endpoint: POST http://%s:%d/mcp", args.mcp_host, args.mcp_port)
+    logging.info("Tools: deepevidence_research, systematic_review, gene_analysis, trialgpt_match, clinical_risk, dswizard_analyze, meta_analysis")
+
+    uvicorn.run(starlette, host=args.mcp_host, port=args.mcp_port, log_level=args.log_level.lower())
+
+
+def main() -> None:
+    args = parse_args()
+
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    global _config
+    _config = MCPServerConfig(
+        llm_host=args.llm_host,
+        llm_port=args.llm_port,
+        model_name=args.model,
+        api_key=args.api_key,
+        mcp_port=args.mcp_port,
+        llm_timeout=args.llm_timeout,
+    )
+
+    app = _build_mcp_app()
+
+    if args.transport == "streamable-http":
+        _serve_streamable_http(app, args)
+    else:
+        _serve_sse(app, args)
 
 
 if __name__ == "__main__":
