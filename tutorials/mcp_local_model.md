@@ -6,7 +6,6 @@ Run BioDSA biomedical AI agents backed by a **local vLLM** model and expose them
 
 ## Prerequisites
 
-- **Docker** running (for the code execution sandbox)
 - **vLLM** serving an OpenAI-compatible endpoint, e.g.:
   ```bash
   vllm serve meta-llama/Llama-3.1-8B-Instruct --port 8000
@@ -88,7 +87,6 @@ Then configure your client to connect to `http://<mcp-server-host>:8765/sse`.
 | `BIODSA_LLM_MODEL` | — | Model name |
 | `BIODSA_LLM_API_KEY` | `not-needed` | API key (optional for local) |
 | `BIODSA_MCP_PORT` | `8765` | MCP server port |
-| `BIODSA_SANDBOX_IMAGE` | `biodsa-sandbox-py:latest` | Docker sandbox image |
 
 ## Architecture
 
@@ -96,14 +94,8 @@ Then configure your client to connect to `http://<mcp-server-host>:8765/sse`.
 ┌──────────────┐   SSE/HTTP    ┌──────────────────┐   OpenAI API   ┌─────────┐
 │  Claude Code │ ◄───────────► │  BioDSA MCP      │ ◄───────────► │  vLLM   │
 │  (or Cursor) │   localhost   │  Server :8765    │   localhost   │  :8000  │
-└──────────────┘               └──────┬───────────┘               └─────────┘
-                                      │
-                               ┌──────┴──────────┐
-                               │  Docker Sandbox  │
-                               │  (code exec)     │
-                               └─────────────────┘
+└──────────────┘               └──────────────────┘               └─────────┘
 ```
 
-- **Sandbox**: Created once at first tool call, reused across calls, destroyed on server shutdown.
-- **Agents**: Instantiated per-tool-call with the shared sandbox container ID.
+- **Agents**: Instantiated per-tool-call, code execution runs locally.
 - **Transport**: SSE (HTTP) — allows remote vLLM and multi-client connections.

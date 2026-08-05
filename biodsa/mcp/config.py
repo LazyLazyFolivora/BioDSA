@@ -20,9 +20,6 @@ class MCPServerConfig:
     mcp_port: int = 8765
     """Port for the MCP SSE HTTP server."""
 
-    sandbox_image: str = "biodsa-sandbox-py:latest"
-    """Docker image identifier for the code execution sandbox."""
-
     tool_timeout: float = 600.0
     """Default timeout in seconds for each MCP tool call (10 min)."""
 

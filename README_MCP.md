@@ -6,18 +6,12 @@
 ┌──────────────┐   SSE/HTTP    ┌──────────────────┐   OpenAI API   ┌─────────────┐
 │  Claude Code │ ◄───────────► │  BioDSA MCP      │ ◄───────────► │  vLLM        │
 │  (or Cursor) │   :8765       │  Server           │   :8000       │  (本地GPU)   │
-└──────────────┘               └──────┬───────────┘               └─────────────┘
-                                      │
-                               ┌──────┴──────────┐
-                               │  Docker Sandbox  │
-                               │  (代码执行隔离)   │
-                               └─────────────────┘
+└──────────────┘               └──────────────────┘               └─────────────┘
 ```
 
 ## 前提
 
 - Python 3.12
-- Docker（代码执行沙箱）
 - vLLM 已启动并暴露 OpenAI 兼容端口
 
 ### 启动 vLLM（如未启动）
@@ -55,7 +49,6 @@ python scripts/start_mcp_server.py \
 ```
 BioDSA MCP server starting on http://0.0.0.0:8765 (SSE)
 Model: meta-llama/Llama-3.1-8B-Instruct  |  LLM endpoint: http://localhost:8000/v1
-Sandbox image: biodsa-sandbox-py:latest
 ```
 
 ### 4. 配置 MCP 客户端
@@ -86,7 +79,6 @@ Sandbox image: biodsa-sandbox-py:latest
 | `--llm-port` | `8000` | vLLM 服务器端口 |
 | `--mcp-port`, `-p` | `8765` | MCP SSE 服务端口 |
 | `--api-key` | `not-needed` | API Key（本地 vLLM 无需） |
-| `--sandbox-image` | `biodsa-sandbox-py:latest` | Docker 沙箱镜像 |
 | `--tool-timeout` | `600` | 单次工具调用超时（秒） |
 | `--llm-timeout` | `120` | 单次 LLM 调用超时（秒） |
 
@@ -100,7 +92,6 @@ BIODSA_LLM_PORT=8000
 BIODSA_LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
 BIODSA_LLM_API_KEY=not-needed
 BIODSA_MCP_PORT=8765
-BIODSA_SANDBOX_IMAGE=biodsa-sandbox-py:latest
 ```
 
 ## 远程 GPU 部署

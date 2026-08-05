@@ -30,7 +30,7 @@ def _run_async(coro):
         import nest_asyncio
         nest_asyncio.apply()
         return asyncio.run(coro)
-    except (ImportError, RuntimeError):
+    except (ImportError, Exception):
         # nest_asyncio not available or uvloop conflict — run in a separate thread
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as executor:

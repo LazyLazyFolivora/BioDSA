@@ -5,7 +5,7 @@ screening, data extraction, evidence synthesis, and meta-analysis.
 import nest_asyncio
 try:
     nest_asyncio.apply()
-except RuntimeError:
+except Exception:
     pass
 
 import warnings

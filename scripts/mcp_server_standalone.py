@@ -15,7 +15,6 @@ import logging
 import os
 import sys
 import traceback
-import atexit
 from typing import Optional, List
 
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,65 +22,19 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from biodsa.mcp.config import MCPServerConfig
-from biodsa.sandbox.sandbox_interface import ExecutionSandboxWrapper
-from biodsa.sandbox.execution import ExecutionResults
 
 # ---------------------------------------------------------------------------
-# Shared state (mirrors biodsa/mcp/server.py)
+# Shared state
 # ---------------------------------------------------------------------------
 _config: Optional[MCPServerConfig] = None
-_master_sandbox: Optional[ExecutionSandboxWrapper] = None
-_sandbox_container_id: Optional[str] = None
-
-
-def _get_sandbox_container_id() -> Optional[str]:
-    global _master_sandbox, _sandbox_container_id
-    if _master_sandbox is not None:
-        return _sandbox_container_id
-    if _config is None:
-        return None
-    try:
-        _master_sandbox = ExecutionSandboxWrapper(image_identifier=_config.sandbox_image)
-        _sandbox_container_id = _master_sandbox.container_id
-        logging.info("Sandbox ready: %s", _sandbox_container_id)
-    except Exception:
-        logging.warning("Failed to create sandbox: %s", traceback.format_exc())
-        _master_sandbox = None
-        _sandbox_container_id = None
-    return _sandbox_container_id
-
-
-def _clear_sandbox_workspace() -> None:
-    if _master_sandbox is not None:
-        try:
-            _master_sandbox.clear_workspace()
-        except Exception:
-            logging.warning("Error clearing sandbox: %s", traceback.format_exc())
-
-
-def _teardown_sandbox() -> None:
-    global _master_sandbox, _sandbox_container_id
-    if _master_sandbox is not None:
-        try:
-            _master_sandbox.stop()
-            logging.info("Sandbox removed.")
-        except Exception:
-            logging.warning("Error stopping sandbox: %s", traceback.format_exc())
-        _master_sandbox = None
-        _sandbox_container_id = None
-
-
-atexit.register(_teardown_sandbox)
 
 
 def _agent_kwargs() -> dict:
-    cid = _get_sandbox_container_id()
     return dict(
         model_name=_config.model_name,
         api_type="local",
         api_key=_config.api_key,
         endpoint=_config.endpoint,
-        container_id=cid,
         llm_timeout=_config.llm_timeout,
     )
 
@@ -137,7 +90,6 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
         logging.error("DeepEvidenceAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -165,7 +117,6 @@ async def tool_systematic_review(research_question: str, target_outcomes: Option
         logging.error("TrialMindSLRAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -190,7 +141,6 @@ async def tool_gene_analysis(gene_set: str) -> str:
         logging.error("GeneAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -217,7 +167,6 @@ async def tool_trialgpt_match(patient_note: str) -> str:
         logging.error("TrialGPTAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -246,7 +195,6 @@ async def tool_clinical_risk(patient_note: str, query: str = "") -> str:
         logging.error("AgentMD failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -267,7 +215,6 @@ async def tool_dswizard_analyze(task: str, workspace_dir: str = "") -> str:
     agent = None
     try:
         kwargs = _agent_kwargs()
-        _get_sandbox_container_id()
         agent = DSWizardAgent(**kwargs)
         if workspace_dir:
             agent.register_workspace(workspace_dir)
@@ -277,7 +224,6 @@ async def tool_dswizard_analyze(task: str, workspace_dir: str = "") -> str:
         logging.error("DSWizardAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -307,7 +253,6 @@ async def tool_meta_analysis(research_question: str, target_outcomes: Optional[L
         logging.error("SLRMetaAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -324,7 +269,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--api-key", default=os.environ.get("BIODSA_LLM_API_KEY", "not-needed"))
     p.add_argument("--mcp-port", "-p", type=int, default=int(os.environ.get("BIODSA_MCP_PORT", "8765")))
     p.add_argument("--mcp-host", default="0.0.0.0")
-    p.add_argument("--sandbox-image", default=os.environ.get("BIODSA_SANDBOX_IMAGE", "biodsa-sandbox-py:latest"))
     p.add_argument("--llm-timeout", type=float, default=120.0)
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p.parse_args()
@@ -345,7 +289,6 @@ def main() -> None:
         model_name=args.model,
         api_key=args.api_key,
         mcp_port=args.mcp_port,
-        sandbox_image=args.sandbox_image,
         llm_timeout=args.llm_timeout,
     )
 

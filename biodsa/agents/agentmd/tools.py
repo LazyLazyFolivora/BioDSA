@@ -11,7 +11,7 @@ These tools enable AgentMD to:
 import nest_asyncio
 try:
     nest_asyncio.apply()
-except RuntimeError:
+except Exception:
     pass
 
 import warnings

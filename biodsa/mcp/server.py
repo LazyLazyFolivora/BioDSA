@@ -2,11 +2,9 @@
 BioDSA MCP Server.
 
 Exposes BioDSA biomedical AI agents as MCP tools via SSE transport,
-backed by a local vLLM model.  A single Docker sandbox is shared across
-all tool calls for low-latency reuse.
+backed by a local vLLM model.  Code execution runs locally.
 """
 
-import atexit
 import logging
 import traceback
 from typing import List, Optional
@@ -14,8 +12,6 @@ from typing import List, Optional
 from mcp.server.fastmcp import FastMCP
 
 from biodsa.mcp.config import MCPServerConfig
-from biodsa.sandbox.sandbox_interface import ExecutionSandboxWrapper
-from biodsa.sandbox.execution import ExecutionResults
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +19,6 @@ logger = logging.getLogger(__name__)
 # Module-level shared state
 # ---------------------------------------------------------------------------
 _config: Optional[MCPServerConfig] = None
-_master_sandbox: Optional[ExecutionSandboxWrapper] = None
-_sandbox_container_id: Optional[str] = None
 
 mcp = FastMCP("BioDSA")
 
@@ -38,72 +32,22 @@ def init_config(config: MCPServerConfig) -> None:
     _config = config
 
 
-def _get_sandbox_container_id() -> Optional[str]:
-    """Lazy-init the shared sandbox; returns its container id (or None)."""
-    global _master_sandbox, _sandbox_container_id
-    if _master_sandbox is not None:
-        return _sandbox_container_id
-
-    if _config is None:
-        logger.warning("MCP config not initialised; sandbox is unavailable.")
-        return None
-
-    try:
-        _master_sandbox = ExecutionSandboxWrapper(
-            image_identifier=_config.sandbox_image,
-        )
-        _sandbox_container_id = _master_sandbox.container_id
-        logger.info("MCP sandbox ready: %s", _sandbox_container_id)
-    except Exception:
-        logger.warning("Failed to create sandbox: %s", traceback.format_exc())
-        _master_sandbox = None
-        _sandbox_container_id = None
-    return _sandbox_container_id
-
-
-def _clear_sandbox_workspace() -> None:
-    """Remove generated files from the shared sandbox between tool calls."""
-    if _master_sandbox is not None:
-        try:
-            _master_sandbox.clear_workspace()
-        except Exception:
-            logger.warning("Error clearing sandbox workspace: %s", traceback.format_exc())
-
-
-def _teardown_sandbox() -> None:
-    """Stop and remove the shared sandbox container."""
-    global _master_sandbox, _sandbox_container_id
-    if _master_sandbox is not None:
-        try:
-            _master_sandbox.stop()
-            logger.info("MCP sandbox removed.")
-        except Exception:
-            logger.warning("Error stopping sandbox: %s", traceback.format_exc())
-        _master_sandbox = None
-        _sandbox_container_id = None
-
-
-atexit.register(_teardown_sandbox)
-
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 def _agent_kwargs() -> dict:
     """Common keyword arguments for instantiating any BioDSA agent."""
-    cid = _get_sandbox_container_id()
     return dict(
         model_name=_config.model_name,
         api_type="local",
         api_key=_config.api_key,
         endpoint=_config.endpoint,
-        container_id=cid,
         llm_timeout=_config.llm_timeout,
     )
 
 
-def _fmt_results(results: ExecutionResults, max_code_len: int = 800) -> str:
-    """Render an ExecutionResults object as Markdown text."""
+def _fmt_results(results, max_code_len: int = 800) -> str:
+    """Render agent results as Markdown text."""
     parts = [results.final_response or "(no final response)"]
 
     if results.code_execution_results:
@@ -122,10 +66,7 @@ def _fmt_results(results: ExecutionResults, max_code_len: int = 800) -> str:
 
 
 def _run_agent(agent_factory, agent_args: dict, go_kwargs: dict) -> str:
-    """Create an agent, run ``go(**go_kwargs)``, return formatted text.
-
-    Cleans the shared sandbox workspace after the run regardless of outcome.
-    """
+    """Create an agent, run ``go(**go_kwargs)``, return formatted text."""
     agent = None
     try:
         agent = agent_factory(**_agent_kwargs(), **agent_args)
@@ -135,8 +76,6 @@ def _run_agent(agent_factory, agent_args: dict, go_kwargs: dict) -> str:
         logger.error("Agent run failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
-        # Prevent agent from killing the shared container on GC
         if agent is not None:
             agent.sandbox = None
 
@@ -162,7 +101,6 @@ def biodsa_dswizard_analyze(task: str, workspace_dir: str = "") -> str:
     agent = None
     try:
         kwargs = _agent_kwargs()
-        _ = _get_sandbox_container_id()  # ensure sandbox exists
         agent = DSWizardAgent(**kwargs)
         if workspace_dir:
             agent.register_workspace(workspace_dir)
@@ -172,7 +110,6 @@ def biodsa_dswizard_analyze(task: str, workspace_dir: str = "") -> str:
         logger.error("DSWizardAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -213,7 +150,6 @@ def biodsa_deepevidence_research(
         logger.error("DeepEvidenceAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -241,7 +177,6 @@ def biodsa_trialgpt_match(patient_note: str) -> str:
         logger.error("TrialGPTAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -267,7 +202,6 @@ def biodsa_gene_analysis(gene_set: str) -> str:
         logger.error("GeneAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -297,7 +231,6 @@ def biodsa_clinical_risk(patient_note: str, query: str = "") -> str:
         logger.error("AgentMD failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -329,7 +262,6 @@ def biodsa_systematic_review(
         logger.error("TrialMindSLRAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None
 
@@ -363,6 +295,5 @@ def biodsa_meta_analysis(
         logger.error("SLRMetaAgent failed: %s", traceback.format_exc())
         return f"Error: {traceback.format_exc()}"
     finally:
-        _clear_sandbox_workspace()
         if agent is not None:
             agent.sandbox = None

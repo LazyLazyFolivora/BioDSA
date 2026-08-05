@@ -62,11 +62,6 @@ def parse_args() -> argparse.Namespace:
         help="Port for the MCP SSE HTTP server.  Default: 8765",
     )
     p.add_argument(
-        "--sandbox-image",
-        default=os.environ.get("BIODSA_SANDBOX_IMAGE", "biodsa-sandbox-py:latest"),
-        help="Docker image for code execution sandbox.",
-    )
-    p.add_argument(
         "--tool-timeout",
         type=float,
         default=600.0,
@@ -100,7 +95,6 @@ def main() -> None:
         model_name=args.model,
         api_key=args.api_key,
         mcp_port=args.mcp_port,
-        sandbox_image=args.sandbox_image,
         tool_timeout=args.tool_timeout,
         llm_timeout=args.llm_timeout,
     )
@@ -108,7 +102,6 @@ def main() -> None:
 
     logging.info("BioDSA MCP server starting on http://0.0.0.0:%d (SSE)", args.mcp_port)
     logging.info("Model: %s  |  LLM endpoint: %s", args.model, config.endpoint)
-    logging.info("Sandbox image: %s", args.sandbox_image)
 
     os.environ["MCP_PORT"] = str(args.mcp_port)
     mcp.run(transport="sse")

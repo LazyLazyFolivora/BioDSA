@@ -6,7 +6,7 @@ Custom tools for the TrialGPT agent.
 import nest_asyncio
 try:
     nest_asyncio.apply()
-except RuntimeError:
+except Exception:
     pass
 
 import warnings
