@@ -3,7 +3,10 @@ Tools for the SLR-Meta agent: PubMed search, ClinicalTrials.gov search,
 screening, data extraction, evidence synthesis, and meta-analysis.
 """
 import nest_asyncio
-nest_asyncio.apply()
+try:
+    nest_asyncio.apply()
+except Exception:
+    pass
 
 import warnings
 warnings.filterwarnings("ignore", message="coroutine .* was never awaited", category=RuntimeWarning)

@@ -2,6 +2,7 @@ import os
 import logging
 import tempfile
 import tarfile
+import time
 from typing import Dict, Any, Callable, Literal, List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from langchain_core.language_models.base import BaseLanguageModel
@@ -110,18 +111,21 @@ class BaseAgent():
         **kwargs
     ):
 
-        # initialize the sandbox (set to None if Docker is not available or fails)
-        try:
-            self.sandbox = ExecutionSandboxWrapper(container_id=container_id)
-            dsa_tools_installed = self.install_biodsa_tools_in_sandbox()
-            if not dsa_tools_installed:
-                logging.warning("Failed to install biodsa.tools. Skipping sandbox.")
+        # initialize the sandbox (Docker must be explicitly enabled via env var)
+        if os.environ.get("BIODSA_USE_DOCKER", "").lower() in ("1", "true", "yes"):
+            try:
+                self.sandbox = ExecutionSandboxWrapper(container_id=container_id)
+                dsa_tools_installed = self.install_biodsa_tools_in_sandbox()
+                if not dsa_tools_installed:
+                    logging.warning("Failed to install biodsa.tools. Skipping sandbox.")
+                    self.sandbox = None
+                else:
+                    logging.info("Sandbox initialized successfully and biodsa.tools installed")
+            except Exception as e:
+                logging.warning(f"Failed to initialize sandbox: {str(e)}")
+                logging.warning("Tools will fall back to local execution when possible")
                 self.sandbox = None
-            else:
-                logging.info("Sandbox initialized successfully and biodsa.tools installed")
-        except Exception as e:
-            logging.warning(f"Failed to initialize sandbox: {str(e)}")
-            logging.warning("Tools will fall back to local execution when possible")
+        else:
             self.sandbox = None
         
         if self.sandbox is not None:
@@ -220,6 +224,19 @@ class BaseAgent():
                 max_retries=0,
                 **kwargs
             )
+        elif (api == "local"):
+            # Local vLLM — strip cloud-provider-specific kwargs
+            kwargs.pop("reasoning_effort", None)
+            kwargs.pop("thinking", None)
+            kwargs.pop("max_completion_tokens", None)
+            kwargs.setdefault("max_tokens", 4096)
+            llm = ChatOpenAI(
+                model=model_name,
+                api_key=api_key or "not-needed",
+                base_url=endpoint,
+                max_retries=0,
+                **kwargs
+            )
         else:
             raise ValueError(f"Invalid API: {api}")
         return llm
@@ -279,7 +296,7 @@ class BaseAgent():
         if tools is None:
             tools = []
         if model_kwargs is None:
-            model_kwargs = self.model_kwargs
+            model_kwargs = self.model_kwargs or {}
         else:
             model_kwargs = self._set_model_kwargs(model_name)
         if api_type is None:
@@ -295,11 +312,17 @@ class BaseAgent():
             endpoint=endpoint,
             **model_kwargs
         )
+        msg_count = len(messages)
+        tool_count = len(tools)
+        t0 = time.time()
+        logging.info("LLM call start: model=%s messages=%d tools=%d", model_name, msg_count, tool_count)
         if tools:
             llm_with_tools = llm.bind_tools(tools, parallel_tool_calls=parallel_tool_calls)
             response = run_with_retry(llm_with_tools.invoke, arg=messages, timeout=self.llm_timeout)
         else:
             response = run_with_retry(llm.invoke, arg=messages, timeout=self.llm_timeout)
+        elapsed = time.time() - t0
+        logging.info("LLM call done: %.1fs model=%s messages=%d", elapsed, model_name, msg_count)
         return response
 
     def _get_input_output_tokens(self, response: BaseMessage) -> Tuple[int, int]:
@@ -317,10 +340,16 @@ class BaseAgent():
             model_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 5000}
             model_kwargs["max_tokens"] = 10000
             model_kwargs.pop("reasoning_effort", None)
-        if "gpt" in model_name.lower():
+        elif "gpt" in model_name.lower():
             model_kwargs["reasoning_effort"] = "medium"
             model_kwargs.pop("thinking", None)
             model_kwargs["max_completion_tokens"] = 5000
+        else:
+            # Local / other models: strip provider-specific kwargs
+            model_kwargs.pop("thinking", None)
+            model_kwargs.pop("reasoning_effort", None)
+            model_kwargs.pop("max_completion_tokens", None)
+            model_kwargs["max_tokens"] = 4096
         return model_kwargs
 
     # ------------------------------------------------------------------

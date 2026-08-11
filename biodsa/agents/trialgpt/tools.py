@@ -4,7 +4,10 @@ Custom tools for the TrialGPT agent.
 # IMPORTANT: Apply nest_asyncio FIRST before any other imports
 # This is required for Jupyter notebooks and LangGraph which run their own event loops
 import nest_asyncio
-nest_asyncio.apply()
+try:
+    nest_asyncio.apply()
+except Exception:
+    pass
 
 import warnings
 # Suppress the coroutine warning that can occur with nested event loops

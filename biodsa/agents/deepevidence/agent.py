@@ -3,8 +3,10 @@ Proposed by:
 
 Wang, Z. et al. (2025). DeepEvidence: Empowering Biomedical Discovery with Deep Knowledge Graph Research. In submission.
 """
+import logging
 import shutil
 import os
+import time
 from typing import Literal, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage
@@ -767,6 +769,10 @@ class DeepEvidenceAgent(BaseAgent):
                 "knowledge_bases": knowledge_bases
             }
 
+            logging.info("DeepEvidence: starting graph stream (query=%s, kbs=%s)",
+                         input_query[:80], knowledge_bases)
+            step_num = 0
+            t_start = time.time()
             # Invoke the agent graph and return the result
             for streamed_chunk in self.agent_graph.stream(
                 inputs,
@@ -777,11 +783,23 @@ class DeepEvidenceAgent(BaseAgent):
                 }
             ):
                 chunk = streamed_chunk[-1]
+                step_num += 1
+                last_message = chunk['messages'][-1]
+                msg_type = type(last_message).__name__
+                content_preview = ""
+                if hasattr(last_message, 'content') and last_message.content:
+                    content_preview = str(last_message.content)[:100].replace('\n', ' ')
+                if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+                    tool_names = [tc.get('name', '?') for tc in last_message.tool_calls]
+                    content_preview = f"tool_calls: {tool_names}"
+                t_step = time.time() - t_start
+                logging.info("DeepEvidence step %d [%.0fs]: %s | %s",
+                             step_num, t_step, msg_type, content_preview)
                 if verbose:
-                    last_message = chunk['messages'][-1]
-                    # Use colored rendering for better visualization
                     print(render_message_colored(last_message, show_tool_calls=True))
                 all_results.append(chunk)
+            logging.info("DeepEvidence: stream done: %d steps in %.0fs",
+                         step_num, time.time() - t_start)
             return all_results
 
         except Exception as e:
