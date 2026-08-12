@@ -27,7 +27,8 @@ from biodsa.agents.deepevidence.prompt import (
     DFS_SYSTEM_PROMPT_TEMPLATE,
     MEMORY_GRAPH_PROTOCOL_PROMPT,
     SEARCH_ROUNDS_BUDGET_PROMPT,
-    ACTION_ROUNDS_BUDGET_PROMPT
+    ACTION_ROUNDS_BUDGET_PROMPT,
+    EXISTING_ENTITIES_PROMPT
 )
 from biodsa.agents.deepevidence.prompt import (
     PUBMED_PAPERS_KB_PROMPT,
@@ -90,6 +91,12 @@ def _is_free_graph_turn(response, used: int, limit: int) -> bool:
         and all(tc["name"] in GRAPH_TOOL_NAMES for tc in tool_calls)
         and used < limit
     )
+
+
+# How many existing entity names to show an agent before writing to the graph.
+# Enough to cover a normal run's graph, bounded so a large one cannot crowd out
+# the conversation.
+MAX_LISTED_ENTITIES = 150
 
 
 def _safe_dir_name(name: str) -> str:
@@ -489,6 +496,50 @@ class DeepEvidenceAgent(BaseAgent):
 
         return tools
 
+    def _build_existing_entities_prompt(self) -> Optional[str]:
+        """List the entities already in the graph so agents reuse their names.
+
+        Deduplication is an exact string match, so left to itself the model writes
+        "SNCA Gene 6622" early on and "SNCA Gene" later, producing two nodes whose
+        edges never meet. Showing it what is already there lets it recognise its own
+        synonyms, which no string-normalisation rule could do.
+        """
+        if self.light_mode:
+            return None
+        try:
+            graph = load_graph_data(
+                context=self.evidence_graph_name,
+                cache_dir=self.evidence_graph_cache_dir,
+            )
+        except Exception:
+            logging.warning("Could not read evidence graph for entity list", exc_info=True)
+            return None
+
+        entities = (graph or {}).get("entities") or []
+        if not entities:
+            return None
+
+        lines = []
+        for entity in entities[:MAX_LISTED_ENTITIES]:
+            name = entity.get("name")
+            if not name:
+                continue
+            entity_type = entity.get("entityType") or entity.get("entity_type") or ""
+            lines.append(f"- {name} ({entity_type})" if entity_type else f"- {name}")
+        if not lines:
+            return None
+
+        hidden = len(entities) - len(lines)
+        note = (
+            f"\n({hidden} further entities not shown; call retrieve_from_graph "
+            f"before adding anything you suspect is already recorded.)\n"
+            if hidden > 0 else ""
+        )
+        return EXISTING_ENTITIES_PROMPT.format(
+            entity_list="\n".join(lines),
+            truncation_note=note,
+        )
+
     def _get_tools_for_subagent(self, knowledge_bases: List[str]):
         kg_tools = []
         for knowledge_base in knowledge_bases:
@@ -502,6 +553,13 @@ class DeepEvidenceAgent(BaseAgent):
             # findings down their results only survive as the few lines of summary
             # they hand back, and the graph stays empty however much they find.
             tools.append(AddToGraph(
+                database_name=self.evidence_graph_name,
+                cache_dir=self.evidence_graph_cache_dir
+            ))
+            # The graph protocol they are given tells them to read the graph before
+            # deciding what to explore next, so withholding this tool just makes
+            # them call a name that is not in the registry.
+            tools.append(RetrieveFromGraph(
                 database_name=self.evidence_graph_name,
                 cache_dir=self.evidence_graph_cache_dir
             ))
@@ -539,6 +597,10 @@ class DeepEvidenceAgent(BaseAgent):
         # build the action rounds budget prompt
         action_rounds_budget_prompt = ACTION_ROUNDS_BUDGET_PROMPT.format(current_round=current_action_round, action_rounds_budget=self.main_action_rounds_budget)
         messages.append(HumanMessage(content=action_rounds_budget_prompt))
+
+        existing_entities_prompt = self._build_existing_entities_prompt()
+        if existing_entities_prompt:
+            messages.append(HumanMessage(content=existing_entities_prompt))
 
         # call the model
         response = self._call_model(
@@ -629,6 +691,10 @@ class DeepEvidenceAgent(BaseAgent):
         action_round_budget_prompt = ACTION_ROUNDS_BUDGET_PROMPT.format(current_round=current_round, action_rounds_budget=action_rounds_budget)
         messages.append(HumanMessage(content=action_round_budget_prompt))
 
+        existing_entities_prompt = self._build_existing_entities_prompt()
+        if existing_entities_prompt:
+            messages.append(HumanMessage(content=existing_entities_prompt))
+
         tools = self._get_tools_for_bfs_agent(knowledge_bases=knowledge_bases)
         response = self._call_model(
             model_name=self.small_model_name,
@@ -676,6 +742,10 @@ class DeepEvidenceAgent(BaseAgent):
         action_rounds_budget = state.action_rounds_budget
         action_round_budget_prompt = ACTION_ROUNDS_BUDGET_PROMPT.format(current_round=current_round, action_rounds_budget=action_rounds_budget)
         messages.append(HumanMessage(content=action_round_budget_prompt))
+
+        existing_entities_prompt = self._build_existing_entities_prompt()
+        if existing_entities_prompt:
+            messages.append(HumanMessage(content=existing_entities_prompt))
 
         tools = self._get_tools_for_dfs_agent(knowledge_bases=knowledge_bases)
         response = self._call_model(

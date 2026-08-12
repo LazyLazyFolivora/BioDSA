@@ -202,6 +202,23 @@ Each item in the graph should represent a unique and reusable concept — not a 
   base you just queried.
 """
 
+EXISTING_ENTITIES_PROMPT = """
+<system_message>
+# Entities Already in the Evidence Graph
+{entity_list}
+{truncation_note}
+Reuse these names verbatim when you write about the same concept. Names are matched
+exactly, so a variant spelling silently creates a second node: "SNCA Gene 6622" and
+"SNCA Gene" become two disconnected entities, and edges written against different
+variants never meet, leaving the graph in unconnected islands.
+
+This applies to synonyms too. If a concept above is the same biological entity under
+another name -- GBA1 and GBA, alpha-synuclein and SNCA, Parkinson's disease and
+Parkinson disease -- write the name already in the list rather than introducing your
+own. Only create a new entity when it is genuinely a concept the list does not cover.
+</system_message>
+"""
+
 SEARCH_ROUNDS_BUDGET_PROMPT = """
 <system_message>
 # Search Rounds Budget

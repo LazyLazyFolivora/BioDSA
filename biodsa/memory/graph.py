@@ -69,6 +69,46 @@ def _as_object_list(value: Any) -> Optional[List[Dict[str, Any]]]:
     return items
 
 
+def _as_int(value: Any, default: Optional[int]) -> Optional[int]:
+    """Coerce a numeric tool argument that models routinely send as a string.
+
+    The agent tool nodes call _run(**tool_call["args"]) directly and so bypass
+    args_schema validation: "10" arrives where 10 was declared, and any slice
+    taken with it raises "slice indices must be integers".
+    """
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_bool(value: Any) -> bool:
+    """Coerce a flag that may arrive as the string "true"/"false"."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return bool(value)
+
+
+def _as_name_list(value: Any) -> List[str]:
+    """Read entity_names, declared as a JSON string but often sent as a list."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return [value]  # a single bare name rather than a JSON list
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    return []
+
+
 class AddToGraphInput(BaseModel):
     entities: Optional[List[Entity]] = Field(None, description="List of entities to create")
     relations: Optional[List[Relation]] = Field(None, description="List of relations to create between entities")
@@ -273,7 +313,12 @@ class RetrieveFromGraph(BaseTool):
         """
         try:
             context = self.database_name
-            
+
+            get_full_map = _as_bool(get_full_map)
+            top_k = _as_int(top_k, 10) or 10
+            max_entities = _as_int(max_entities, None)
+            max_observations_per_entity = _as_int(max_observations_per_entity, 5) or 5
+
             # Get full map as text
             if get_full_map:
                 text_repr = get_graph_text_overview(
@@ -297,7 +342,7 @@ class RetrieveFromGraph(BaseTool):
             
             # Retrieve specific entities
             elif entity_names:
-                entity_names_list = json.loads(entity_names)
+                entity_names_list = _as_name_list(entity_names)
                 result = open_nodes(entity_names_list, context=context, cache_dir=self.cache_dir)
                 return json.dumps({
                     "success": True,
