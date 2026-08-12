@@ -18,6 +18,7 @@ class DeepEvidenceAgentState(BaseModel):
     subgraph_tool_call_ids: List[str] = []
     current_round: int = 0  # Number of BFS/DFS search rounds called
     current_action_round: int = 0  # Total number of orchestrator agent calls
+    free_graph_turns: int = 0  # Evidence-graph turns not charged to the action budget
     subagent_knowledge_bases: List[str] = [] # passed to the sub-agents
 
 class BFSAgentState(BaseModel):
@@ -30,6 +31,7 @@ class BFSAgentState(BaseModel):
     total_output_tokens: int = 0
     action_rounds_budget: int = 0  # Budget for BFS agent action rounds
     current_round: int = 0  # Current action round for BFS agent
+    free_graph_turns: int = 0  # Evidence-graph turns not charged to the budget
 
 class DFSAgentState(BaseModel):
     """State for the depth-first search agent."""
@@ -41,3 +43,4 @@ class DFSAgentState(BaseModel):
     total_output_tokens: int = 0
     action_rounds_budget: int = 0  # Budget for DFS agent action rounds
     current_round: int = 0  # Current action round for DFS agent
+    free_graph_turns: int = 0  # Evidence-graph turns not charged to the budget

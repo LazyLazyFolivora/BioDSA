@@ -65,6 +65,33 @@ from biodsa.agents.deepevidence.tool_wrappers.drugs.tools import (
 )
 
 
+# Evidence-graph tools are exempt from the action budget.
+GRAPH_TOOL_NAMES = frozenset({"add_to_graph", "retrieve_from_graph"})
+
+# ...but only for so long. Without a cap, a turn that only touches the graph would
+# never advance the budget and an agent could loop on it until the run times out.
+MAX_FREE_GRAPH_TURNS = 15
+
+# Subagents run on a far smaller budget (3-5 rounds), so they get proportionally
+# fewer free turns; a handful of writes is enough to record one search pass.
+MAX_FREE_SUBAGENT_GRAPH_TURNS = 8
+
+
+def _is_free_graph_turn(response, used: int, limit: int) -> bool:
+    """True when this turn only touched the evidence graph and is still free.
+
+    Graph calls are bookkeeping, not research. Charging them to the action budget
+    is what made agents skip the graph entirely: every turn warned them they were
+    nearly out of rounds, while a write still cost one of those rounds.
+    """
+    tool_calls = getattr(response, "tool_calls", None) or []
+    return (
+        bool(tool_calls)
+        and all(tc["name"] in GRAPH_TOOL_NAMES for tc in tool_calls)
+        and used < limit
+    )
+
+
 def _safe_dir_name(name: str) -> str:
     """Make a caller-supplied session id usable as a directory name.
 
@@ -89,7 +116,7 @@ class DeepEvidenceAgent(BaseAgent):
     evidence_graph_name: str = "evidence_graph"
     evidence_graph_cache_dir: str = None
     main_search_rounds_budget: int = 5
-    main_action_rounds_budget: int = 20
+    main_action_rounds_budget: int = 25
     subagent_action_rounds_budget: int = 5
 
     def __init__(
@@ -107,7 +134,7 @@ class DeepEvidenceAgent(BaseAgent):
         small_model_endpoint: str = None,
         evidence_graph_cache_dir: str = None,
         main_search_rounds_budget: int = 5,
-        main_action_rounds_budget: int = 20,
+        main_action_rounds_budget: int = 25,
         subagent_action_rounds_budget: int = 5,
         light_mode: bool = False,
         llm_timeout: Optional[float] = None,
@@ -190,9 +217,10 @@ class DeepEvidenceAgent(BaseAgent):
         search_target = state.search_targets
         search_target = "\n\n".join(search_target)
         knowledge_bases = state.subagent_knowledge_bases
-        action_rounds_budget = state.search_rounds_budget
-        action_rounds_budget = min(action_rounds_budget, self.subagent_action_rounds_budget)
-        action_rounds_budget = max(action_rounds_budget, 3) # minimum 3 rounds of action is required
+        # state.search_rounds_budget is never assigned, so the old
+        # min(state.search_rounds_budget, ...) always collapsed to 0 and every
+        # subagent silently ran on the floor of 3, ignoring the configured value.
+        action_rounds_budget = max(self.subagent_action_rounds_budget, 3)
 
         # prepare the inputs
         inputs = {
@@ -247,9 +275,8 @@ class DeepEvidenceAgent(BaseAgent):
         # trigger the subgraph
         search_targets = "\n\n".join(state.search_targets)
         knowledge_bases = state.subagent_knowledge_bases
-        action_rounds_budget = state.search_rounds_budget
-        action_rounds_budget = min(action_rounds_budget, self.subagent_action_rounds_budget)
-        action_rounds_budget = max(action_rounds_budget, 3) # minimum 3 rounds of action is required
+        # See _call_bfs_workflow: state.search_rounds_budget is never assigned.
+        action_rounds_budget = max(self.subagent_action_rounds_budget, 3)
 
         # prepare the inputs
         inputs = {
@@ -382,6 +409,8 @@ class DeepEvidenceAgent(BaseAgent):
 
     def _build_system_prompt_for_bfs_agent(self, knowledge_bases: List[str]=None):
         system_prompt = BFS_SYSTEM_PROMPT_TEMPLATE.format(workdir=self.workdir)
+        if not self.light_mode:
+            system_prompt += MEMORY_GRAPH_PROTOCOL_PROMPT
         if "gene" in knowledge_bases:
             system_prompt += GENE_SET_KB_PROMPT
         if "disease" in knowledge_bases:
@@ -396,6 +425,8 @@ class DeepEvidenceAgent(BaseAgent):
 
     def _build_system_prompt_for_dfs_agent(self, knowledge_bases: List[str]=None):
         system_prompt = DFS_SYSTEM_PROMPT_TEMPLATE.format(workdir=self.workdir)
+        if not self.light_mode:
+            system_prompt += MEMORY_GRAPH_PROTOCOL_PROMPT
         if "gene" in knowledge_bases:
             system_prompt += GENE_SET_KB_PROMPT
         if "disease" in knowledge_bases:
@@ -458,23 +489,29 @@ class DeepEvidenceAgent(BaseAgent):
 
         return tools
 
-    def _get_tools_for_bfs_agent(self, knowledge_bases: List[str]):
+    def _get_tools_for_subagent(self, knowledge_bases: List[str]):
         kg_tools = []
         for knowledge_base in knowledge_bases:
             for tool_class in KNOWLEDGE_BASE_TO_TOOLS_MAP[knowledge_base]:
                 initialized_tool = tool_class(sandbox=self.sandbox)
                 kg_tools.append(initialized_tool)
         tools = kg_tools + [CodeExecutionTool(self.sandbox)]
+
+        if not self.light_mode:
+            # The subagents do most of the searching, so without a way to write
+            # findings down their results only survive as the few lines of summary
+            # they hand back, and the graph stays empty however much they find.
+            tools.append(AddToGraph(
+                database_name=self.evidence_graph_name,
+                cache_dir=self.evidence_graph_cache_dir
+            ))
         return tools
 
+    def _get_tools_for_bfs_agent(self, knowledge_bases: List[str]):
+        return self._get_tools_for_subagent(knowledge_bases)
+
     def _get_tools_for_dfs_agent(self, knowledge_bases: List[str]):
-        kg_tools = []
-        for knowledge_base in knowledge_bases:
-            for tool_class in KNOWLEDGE_BASE_TO_TOOLS_MAP[knowledge_base]:
-                initialized_tool = tool_class(sandbox=self.sandbox)
-                kg_tools.append(initialized_tool)
-        tools = kg_tools + [CodeExecutionTool(self.sandbox)]
-        return tools
+        return self._get_tools_for_subagent(knowledge_bases)
 
     def _orchestrator_agent_node(self, state: DeepEvidenceAgentState, config: RunnableConfig) -> DeepEvidenceAgentState:
         """
@@ -531,8 +568,11 @@ class DeepEvidenceAgent(BaseAgent):
             subagent_knowledge_bases = list(set(subagent_knowledge_bases))
             search_targets = list(set(search_targets))
 
-        # Increment action round counter (this happens every time orchestrator is called)
-        current_action_round += 1
+        free_graph_turns = state.free_graph_turns
+        if _is_free_graph_turn(response, free_graph_turns, MAX_FREE_GRAPH_TURNS):
+            free_graph_turns += 1
+        else:
+            current_action_round += 1
 
         # get the input and output tokens
         input_tokens, output_tokens = self._get_input_output_tokens(response)
@@ -549,6 +589,7 @@ class DeepEvidenceAgent(BaseAgent):
             "search_targets": search_targets,
             "current_round": current_round,
             "current_action_round": current_action_round,
+            "free_graph_turns": free_graph_turns,
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
         }
@@ -602,7 +643,12 @@ class DeepEvidenceAgent(BaseAgent):
         input_tokens, output_tokens = self._get_input_output_tokens(response)
         total_input_tokens = state.total_input_tokens + input_tokens
         total_output_tokens = state.total_output_tokens + output_tokens
-        current_round += 1
+
+        free_graph_turns = state.free_graph_turns
+        if _is_free_graph_turn(response, free_graph_turns, MAX_FREE_SUBAGENT_GRAPH_TURNS):
+            free_graph_turns += 1
+        else:
+            current_round += 1
 
         # update the state
         print(f"Current round of the breadth-first search agent: {current_round}/{action_rounds_budget}")
@@ -611,6 +657,7 @@ class DeepEvidenceAgent(BaseAgent):
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
             "current_round": current_round,
+            "free_graph_turns": free_graph_turns,
         }
 
     def _dfs_agent_node(self, state: DFSAgentState, config: RunnableConfig) -> DFSAgentState:
@@ -644,13 +691,20 @@ class DeepEvidenceAgent(BaseAgent):
         input_tokens, output_tokens = self._get_input_output_tokens(response)
         total_input_tokens = state.total_input_tokens + input_tokens
         total_output_tokens = state.total_output_tokens + output_tokens
-        current_round += 1
+
+        free_graph_turns = state.free_graph_turns
+        if _is_free_graph_turn(response, free_graph_turns, MAX_FREE_SUBAGENT_GRAPH_TURNS):
+            free_graph_turns += 1
+        else:
+            current_round += 1
+
         print(f"Current round of the depth-first search agent: {current_round}/{action_rounds_budget}")
         return {
             "messages": [response],
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
             "current_round": current_round,
+            "free_graph_turns": free_graph_turns,
         }
 
     def _tool_node(self, state: DeepEvidenceAgentState, config: RunnableConfig) -> DeepEvidenceAgentState:

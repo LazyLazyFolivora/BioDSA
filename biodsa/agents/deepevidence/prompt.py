@@ -30,8 +30,19 @@ Every step you should make a tool call unless it is the last step.
 The system will stop automatically if you do not make a tool call in a step.
 
 # Evidence Graph Operations
-After obtaining useful findings, call `add_to_graph` to record entities, relations, and provenance.  
-Periodically call `retrieve_from_graph` to review the accumulated evidence and decide whether to continue or finalize the task.
+Record findings with `add_to_graph` as you obtain them, not at the end of the task.
+Calls to `add_to_graph` and `retrieve_from_graph` do not consume your action budget,
+so a low remaining budget is never a reason to skip writing the graph.
+
+Before you give the final answer you MUST have written the evidence behind it into
+the graph, including the relations between the entities. If `retrieve_from_graph`
+comes back empty, or returns entities with no relations between them, you are not
+finished: write the missing nodes and edges first, then answer.
+
+Delegate bulk exploration to the `go_breadth_first_search` and `go_depth_first_search`
+subagents instead of searching entity by entity yourself. Use your own search tools
+only to confirm a specific fact. Your action budget is for orchestration, and the
+subagents also contribute to the shared evidence graph.
 
 After that, you have the below options:
 
@@ -62,7 +73,8 @@ You are working under the directory `{workdir}`. Your goal is to perform iterati
     - Conduct several rounds of broad searches across the knowledge bases to collect a wide range of potentially relevant results.
 2. Result Review & Screening - Revisit and screen the collected results to identify the most relevant findings. Use `code_exec_tool` to screen and analyze the data.
 3. Refinement & Note-Taking - Iteratively refine your search strategy based on what you learn from previous rounds. Summarize your reasoning, inclusion/exclusion decisions, and key observations.
-4. Save Outputs - Save the screened and refined final results to the directory `{workdir}`.
+4. Record Evidence - As each round confirms an entity or a link between entities, call `add_to_graph` to record it. The summary you return below is only a few lines long, so the shared evidence graph is the only place your detailed findings survive for the orchestrator and the user.
+5. Save Outputs - Save the screened and refined final results to the directory `{workdir}`.
 
 # Knowledge Base Integration
 Before invoking search or executing code, use the knowledge base tools (`find_entities`, `find_related_entities`, `search_*`, `fetch_*_details`, etc.) to extract and expand biomedical entities (genes, drugs, diseases, variants,).  
@@ -92,7 +104,8 @@ You are working under the directory `{workdir}`. Your goal is to perform depth-f
 2. Progressive Analysis - Use `code_exec_tool` to analyze each layer of information as you go deeper. Prioritize reasoning chains that appear most promising, and document intermediate findings.
 3. Iterative Refinement - Based on analytical outcomes, determine the next layer or sub-topic to explore. Continue until you reach well-supported conclusions or no further meaningful depth is achievable.
 4. Documentation & Synthesis - Summarize how each step of reasoning or exploration connects to prior layers. Record methodological notes, rationale for each branching path, and synthesized interpretations.
-5. Save Outputs - Save the refined analyses, structured insights, and final synthesized results under `{workdir}`.
+5. Record Evidence - As each layer confirms an entity or a mechanistic link, call `add_to_graph` to record it, edges included. Depth-first work is precisely where mechanisms surface, and the summary you return below is far too short to carry them.
+6. Save Outputs - Save the refined analyses, structured insights, and final synthesized results under `{workdir}`.
 
 
 # Knowledge Base Integration
@@ -115,6 +128,26 @@ Do not include detailed narratives, lists, or study summaries. Keep the entire o
 
 MEMORY_GRAPH_PROTOCOL_PROMPT = """
 # Memory Graph Protocol
+
+## 0. When to Write
+Call `add_to_graph` as soon as a search or analysis yields a fact worth keeping.
+Do not save it up for the end of the task: a run that finishes with an empty graph
+has failed, however good the prose answer is.
+
+Relations matter as much as entities. A pile of disconnected nodes records no
+mechanism, so whenever you write two entities that are biologically linked, write
+the edge between them in the same call.
+
+## 0.1 The System Does the Bookkeeping
+You never need to inspect the graph before writing to it:
+- Entities and relations that already exist are skipped, so re-writing is harmless.
+- Entities referenced by a relation are created automatically, so a missing
+  endpoint never costs you the edge. Still send the entity and its edge in the
+  same call where you can: an auto-created endpoint carries no type and no
+  observations.
+- Observations already attached to an entity are not duplicated.
+
+Use `retrieve_from_graph` to decide what to research next, not to guard writes.
 
 ## 1. What to Store
 Keep only concise, high-value facts directly relevant to the research question.  
@@ -145,11 +178,8 @@ Each item in the graph should represent a unique and reusable concept — not a 
 - If canonical ID unavailable, keep the human-readable label and note its source KG.
 - Paper entities: always start name with "PMID:"; optional short token after.
 - Keep names ≤5 words or ≤40 characters.
-- Never create multiple nodes for the same concept with case or wording variations.
-- When encountering a near-duplicate:
-  - If IDs match: update observations on the existing node.
-  - If labels match (case-insensitive): treat as same node.
-  - If labels differ but clearly same PMID or KG ID: merge; do not create new node.
+- Deduplication matches names exactly, so spell a concept the same way every time.
+  "EGFR" and "egfr" become two nodes; pick the canonical form and reuse it.
 
 ## 3. Relation Standards
 - Use the smallest consistent predicate set; do not introduce new verbs unless absolutely needed.
@@ -158,24 +188,18 @@ Each item in the graph should represent a unique and reusable concept — not a 
 - Limit contextual edges:
   - Max two per finding (e.g., one to MEASURE, one to CELLTYPE).
   - Do not connect every assay/species as a separate ASSOCIATED_WITH edge.
-- Each relation must reference at least one evidence source (PMID or KG provenance).
 
-## 4. Graph Maintenance & Anti-Redundancy Rules
-- GLOBAL graph is append-only but deduplicated by canonical ID and normalized label.
-- Each merge cycle: ≤10 new entities, ≤16 new relations.
-- Before creating any entity or relation, the agent must:
-  1. Check if an equivalent already exists (by ID or normalized name).
-  2. If found, update its observations instead of creating a new node.
-- Conflicting results:
-  - Keep both relations with distinct evidence; tag with `conflict_group:<id>`.
-  - Do not duplicate entire entities just to hold alternative findings.
-- Always prefer observations over new edges when adding simple context.
-- Each paper appears exactly once (one node per PMID).
-- Each finding appears exactly once per unique numeric or mechanistic result.
-- Each context concept (species, cell type, assay) appears once per canonical ID.
+## 4. Keep the Graph Dense, Not Big
+- Up to ~10 entities and ~16 relations per call; split a larger batch across calls.
+- One node per concept, one node per PMID, one node per canonical ID.
+- Prefer an observation over a new edge when adding simple context.
+- Conflicting results: keep both relations with their distinct evidence and tag them
+  `conflict_group:<id>` rather than duplicating the entities.
 
-## 5. Provenance & Review
-- Every node and edge must include a provenance note (PMID or KG@version).
+## 5. Provenance
+- Note the source (PMID or KG name) inside the observation text of each node and
+  edge. Record the fact even when the only source you can cite is the knowledge
+  base you just queried.
 """
 
 SEARCH_ROUNDS_BUDGET_PROMPT = """
