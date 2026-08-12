@@ -37,6 +37,10 @@ from biodsa.narrative.broadcaster import EventBroadcaster
 _config: Optional[MCPServerConfig] = None
 _broadcaster: EventBroadcaster = EventBroadcaster()
 
+# How long to wait for the notification consumer to flush its queue once a run
+# has finished before giving up on it.
+CONSUMER_DRAIN_TIMEOUT = 30.0
+
 
 def _agent_kwargs() -> dict:
     return dict(
@@ -91,6 +95,7 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
 
     agent = None
     consumer_task = None
+    streaming = False
     t_start = time.time()
     try:
         kwargs = _agent_kwargs()
@@ -99,18 +104,26 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
         kwargs.setdefault("small_model_api_key", _config.api_key)
         kwargs.setdefault("small_model_endpoint", _config.endpoint)
         if session_id:
-            kwargs["broadcaster"] = _broadcaster
-            kwargs["session_id"] = session_id
-            _broadcaster.create_run(session_id)
-            # Start consumer task: broadcaster events → MCP notifications
+            # Resolve the request context *before* creating the run: without a
+            # consumer there is nobody draining the queue, and the agent would
+            # pile up a whole run's events (including the RunComplete snapshot)
+            # in memory for nothing.
             try:
                 ctx = request_ctx.get()
+            except LookupError:
+                ctx = None
+                logging.warning("DeepEvidence: no MCP request context, graph events will not be streamed")
+            if ctx is not None and _broadcaster.create_run(session_id):
+                kwargs["broadcaster"] = _broadcaster
+                kwargs["session_id"] = session_id
+                streaming = True
                 mcp_session = ctx.session
                 _sid = session_id
                 # Without related_request_id the SDK routes notifications to the
                 # standalone GET SSE stream, which streamable-http clients such
                 # as WeKnora never open -- the events would be silently dropped.
                 _req_id = ctx.request_id
+
                 async def _stream_to_mcp():
                     seq = 0
                     async for event in _broadcaster.subscribe_events(_sid):
@@ -127,10 +140,9 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
                             notification,
                             related_request_id=_req_id,
                         )
+
                 consumer_task = asyncio.create_task(_stream_to_mcp())
                 logging.info("DeepEvidence: MCP notification consumer started for session=%s", session_id)
-            except LookupError:
-                logging.warning("DeepEvidence: no MCP request context, graph events will not be streamed")
         logging.info("DeepEvidence: creating agent for query=%s session=%s", research_question[:80], session_id)
         agent = DeepEvidenceAgent(**kwargs)
         go_kwargs = {"input_query": research_question}
@@ -138,12 +150,12 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
             go_kwargs["knowledge_bases"] = knowledge_bases
         logging.info("DeepEvidence: agent.go() starting (kbs=%s, session=%s)",
                      go_kwargs.get("knowledge_bases", "all"), session_id)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         results = await loop.run_in_executor(None, lambda: agent.go(**go_kwargs))
         elapsed = time.time() - t_start
         logging.info("DeepEvidence: agent.go() done in %.0fs", elapsed)
         # Push final graph snapshot
-        if session_id:
+        if streaming:
             try:
                 graph_data = results.evidence_graph_data if results else {}
                 entities = graph_data.get("entities", []) if isinstance(graph_data, dict) else []
@@ -166,21 +178,38 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
     finally:
         if agent is not None:
             agent.sandbox = None
-        if session_id:
-            _broadcaster.close_run(session_id)
+        if streaming:
+            try:
+                _broadcaster.close_run(session_id)
+            except Exception:
+                logging.warning("Failed to close broadcaster run", exc_info=True)
             if consumer_task is not None:
                 try:
-                    await consumer_task
+                    # Bounded on purpose: send_notification can stall on a slow
+                    # or half-open client, and an unbounded await here would
+                    # wedge the tool call forever.
+                    await asyncio.wait_for(consumer_task, timeout=CONSUMER_DRAIN_TIMEOUT)
+                except asyncio.TimeoutError:
+                    consumer_task.cancel()
+                    try:
+                        await consumer_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    logging.warning(
+                        "Graph event consumer did not drain within %.0fs, cancelled: session=%s",
+                        CONSUMER_DRAIN_TIMEOUT, session_id,
+                    )
                 except Exception:
                     logging.warning("Graph event consumer task failed", exc_info=True)
-            # The graph already reached the client in the RunComplete snapshot,
-            # so the per-session copy on disk is no longer needed.
-            try:
-                cache_dir = getattr(agent, "evidence_graph_cache_dir", None)
-                if cache_dir and os.path.basename(os.path.dirname(str(cache_dir))) == "sessions":
-                    shutil.rmtree(cache_dir, ignore_errors=True)
-            except Exception:
-                logging.warning("Failed to clean session graph dir", exc_info=True)
+        # The graph already reached the client in the RunComplete snapshot, so
+        # the per-session copy on disk is no longer needed. Only ever delete a
+        # directory the agent created itself, never a caller-supplied or shared
+        # one.
+        try:
+            if agent is not None and agent.owns_evidence_graph_cache_dir:
+                shutil.rmtree(agent.evidence_graph_cache_dir, ignore_errors=True)
+        except Exception:
+            logging.warning("Failed to clean session graph dir", exc_info=True)
 
 
 async def tool_systematic_review(research_question: str, target_outcomes: Optional[List[str]] = None) -> str:

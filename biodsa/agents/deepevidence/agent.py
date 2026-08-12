@@ -70,8 +70,13 @@ def _safe_dir_name(name: str) -> str:
 
     Callers may pass composite ids such as "<message_id>:<tool_call_id>", and
     ':' is not a legal path character on Windows.
+
+    '.' is deliberately excluded from the allowed set: the session id reaches us
+    from an MCP client and is partly LLM-generated, so a value of "." or ".."
+    would otherwise escape the sessions directory and get wiped by the rmtree in
+    go().
     """
-    return "".join(c if c.isalnum() or c in "._-" else "_" for c in name) or "default"
+    return "".join(c if c.isalnum() or c in "_-" else "_" for c in name) or "default"
 
 
 class DeepEvidenceAgent(BaseAgent):
@@ -132,6 +137,9 @@ class DeepEvidenceAgent(BaseAgent):
             self.small_model_api_key = small_model_api_key
             self.small_model_endpoint = small_model_endpoint
 
+        # True only when we created a private directory for this session, which
+        # is the one case where a caller may safely delete it afterwards.
+        self.owns_evidence_graph_cache_dir = False
         if evidence_graph_cache_dir is None:
             # assign a default value
             evidence_graph_cache_dir = get_default_memory_graph_cache_dir()
@@ -142,6 +150,7 @@ class DeepEvidenceAgent(BaseAgent):
                     str(evidence_graph_cache_dir), "sessions", _safe_dir_name(session_id)
                 )
                 os.makedirs(evidence_graph_cache_dir, exist_ok=True)
+                self.owns_evidence_graph_cache_dir = True
 
         self.evidence_graph_cache_dir = evidence_graph_cache_dir
         self.main_search_rounds_budget = main_search_rounds_budget
@@ -799,6 +808,10 @@ class DeepEvidenceAgent(BaseAgent):
             # stream_mode="values" replays the whole state on every step, so the
             # last message repeats whenever a step does not append one.
             seen_message_ids: set[str] = set()
+            # Reset so a reused agent instance does not report the previous
+            # run's totals.
+            self._event_counts = {}
+            self._current_phase = ""
             # Invoke the agent graph and return the result
             for streamed_chunk in self.agent_graph.stream(
                 inputs,
@@ -851,7 +864,7 @@ class DeepEvidenceAgent(BaseAgent):
                                 total_steps_estimate=30,
                                 entities_found=self._event_counts.get("EntityConfirmed", 0),
                                 relations_found=self._event_counts.get("RelationFound", 0),
-                                current_phase=getattr(self, "_current_phase", ""),
+                                current_phase=self._current_phase,
                             ))
                     except Exception:
                         logging.warning("Narrative event extraction/emit failed", exc_info=True)

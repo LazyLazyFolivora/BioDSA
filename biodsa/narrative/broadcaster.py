@@ -9,6 +9,7 @@ handler reads events via subscribe().
 import asyncio
 import json
 import logging
+from collections import deque
 from typing import Optional
 
 from biodsa.narrative.events import NarrativeEvent
@@ -24,23 +25,38 @@ class EventBroadcaster:
 
     def __init__(self) -> None:
         self._queues: dict[str, asyncio.Queue] = {}
-        self._buffers: dict[str, list[NarrativeEvent]] = {}
+        self._buffers: dict[str, deque] = {}
         self._loops: dict[str, asyncio.AbstractEventLoop] = {}
 
-    def create_run(self, session_id: str) -> None:
-        """Create a queue and ring buffer for the given session."""
-        if session_id not in self._queues:
-            self._queues[session_id] = asyncio.Queue()
-            self._buffers[session_id] = []
-            # Captured here because create_run runs on the event loop thread,
-            # while emit_sync is called from a worker thread.
-            try:
-                self._loops[session_id] = asyncio.get_running_loop()
-            except RuntimeError:
-                # No running loop (e.g. a synchronous test); emit_sync then
-                # falls back to a direct, same-thread put.
-                pass
-            logger.info("Broadcaster run created: session_id=%s", session_id)
+    def create_run(self, session_id: str) -> bool:
+        """Create a queue and ring buffer for the given session.
+
+        Returns False if the id is already in use. Session ids come from the
+        client and are partly LLM-generated, so collisions are possible; sharing
+        one queue between two runs would leak the first caller's entities and
+        search terms into the second caller's stream. The caller is expected to
+        run without streaming rather than reuse the queue.
+        """
+        if session_id in self._queues:
+            logger.error(
+                "Broadcaster run already active, refusing to share its queue: session_id=%s",
+                session_id,
+            )
+            return False
+        self._queues[session_id] = asyncio.Queue()
+        # maxlen evicts in one atomic step; a len()/pop(0) pair would race
+        # between concurrent emit_sync callers.
+        self._buffers[session_id] = deque(maxlen=RING_BUFFER_SIZE)
+        # Captured here because create_run runs on the event loop thread,
+        # while emit_sync is called from a worker thread.
+        try:
+            self._loops[session_id] = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (e.g. a synchronous test); emit_sync then
+            # falls back to a direct, same-thread put.
+            pass
+        logger.info("Broadcaster run created: session_id=%s", session_id)
+        return True
 
     def close_run(self, session_id: str) -> None:
         """Push sentinel and clean up the queue for the given session."""
@@ -82,8 +98,6 @@ class EventBroadcaster:
         buf = self._buffers.get(session_id)
         if buf is not None:
             buf.append(event)
-            if len(buf) > RING_BUFFER_SIZE:
-                buf.pop(0)
         loop = self._loops.get(session_id)
         if loop is None:
             queue.put_nowait(event)
@@ -100,6 +114,10 @@ class EventBroadcaster:
 
         Replays the ring buffer first for late subscribers, then
         yields events as they arrive. Ends when the sentinel is received.
+
+        Not currently wired up; reserved for a direct SSE endpoint. MCP
+        notification delivery uses subscribe_events instead, which must not
+        replay (see its docstring).
         """
         queue = self._queues.get(session_id)
         if queue is None:
@@ -130,6 +148,10 @@ class EventBroadcaster:
         """
         queue = self._queues.get(session_id)
         if queue is None:
+            # Either the id was never created, or the run closed before this
+            # consumer got scheduled -- in which case the whole stream is lost,
+            # so make it visible rather than yielding nothing.
+            logger.warning("Broadcaster subscribe for inactive session: %s", session_id)
             return
 
         while True:
