@@ -88,7 +88,7 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
     """
     from biodsa.agents.deepevidence.agent import DeepEvidenceAgent
     from biodsa.narrative.events import RunComplete
-    from biodsa.narrative.graph_log import log_run_summary
+    from biodsa.narrative.graph_log import log_run_summary, log_stream_summary
     from biodsa.memory.memory_graph import load_graph_data
     from mcp.server.lowlevel.server import request_ctx
     from mcp.types import Notification
@@ -96,6 +96,7 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
     agent = None
     consumer_task = None
     streaming = False
+    stream_stats = {"sent": 0, "failed": 0}
     t_start = time.time()
     try:
         kwargs = _agent_kwargs()
@@ -128,6 +129,7 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
                     seq = 0
                     async for event in _broadcaster.subscribe_events(_sid):
                         seq += 1
+                        event_type = type(event).__name__
                         notification = Notification(
                             method="notifications/biodsa/graph_event",
                             params={
@@ -136,10 +138,25 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
                                 "event": event.to_dict(),
                             },
                         )
-                        await mcp_session.send_notification(
-                            notification,
-                            related_request_id=_req_id,
-                        )
+                        try:
+                            await mcp_session.send_notification(
+                                notification,
+                                related_request_id=_req_id,
+                            )
+                            stream_stats["sent"] += 1
+                            logging.debug("Graph notification sent: seq=%d type=%s session=%s",
+                                          seq, event_type, _sid)
+                        except Exception:
+                            # Keep draining. Aborting here would also drop the
+                            # final RunComplete snapshot, and the queue would
+                            # simply fill up behind us.
+                            stream_stats["failed"] += 1
+                            if stream_stats["failed"] == 1:
+                                logging.warning(
+                                    "Failed to send graph notification, continuing: "
+                                    "seq=%d type=%s session=%s", seq, event_type, _sid,
+                                    exc_info=True,
+                                )
 
                 consumer_task = asyncio.create_task(_stream_to_mcp())
                 logging.info("DeepEvidence: MCP notification consumer started for session=%s", session_id)
@@ -208,6 +225,12 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
                     )
                 except Exception:
                     logging.warning("Graph event consumer task failed", exc_info=True)
+            logging.info("DeepEvidence: graph notifications sent=%d failed=%d session=%s",
+                         stream_stats["sent"], stream_stats["failed"], session_id)
+            try:
+                log_stream_summary(session_id, stream_stats["sent"], stream_stats["failed"])
+            except Exception:
+                logging.warning("Failed to log stream summary", exc_info=True)
         # The per-session graph is kept: it is the only durable copy of the nodes
         # and relations, the client cannot ask for it again, and deleting it makes
         # an empty graph indistinguishable from a failed write. go() clears the

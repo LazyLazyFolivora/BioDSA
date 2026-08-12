@@ -164,25 +164,30 @@ class AddToGraph(BaseTool):
             
             # Process observations
             if observations:
-                observations_dict = _as_object(observations)
-                if observations_dict is None:
+                # The schema asks for one entity, but models often batch several,
+                # and the underlying add_observations takes a list either way.
+                observations_list = _as_object_list(observations)
+                if observations_list is None:
                     return json.dumps({
                         "success": False,
-                        "error": f"Invalid observations format: expected an object, "
-                                 f"got {type(observations).__name__}: {str(observations)[:200]}"
+                        "error": f"Invalid observations format: expected an object or a list "
+                                 f"of objects, got {type(observations).__name__}: "
+                                 f"{str(observations)[:200]}"
                     })
-                # Validate required keys
-                if "name" not in observations_dict or "observations" not in observations_dict:
-                    return json.dumps({
-                        "success": False,
-                        "error": f"Observations missing required fields 'name' or 'observations': {observations_dict}"
+                obs_dicts = []
+                for obs in observations_list:
+                    # Validate required keys
+                    if "name" not in obs or "observations" not in obs:
+                        return json.dumps({
+                            "success": False,
+                            "error": f"Observations missing required fields 'name' or 'observations': {obs}"
+                        })
+                    obs_dicts.append({
+                        "entityName": obs["name"],
+                        "contents": obs["observations"]
                     })
 
-                obs_dict = {
-                    "entityName": observations_dict["name"],
-                    "contents": observations_dict["observations"]
-                }
-                added = add_observations([obs_dict], context=context, cache_dir=self.cache_dir)
+                added = add_observations(obs_dicts, context=context, cache_dir=self.cache_dir)
                 results["observations_added"] = added
             
             if not results:

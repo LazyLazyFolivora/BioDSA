@@ -155,6 +155,25 @@ def log_tool_result(message, session_id: Optional[str] = None, step: int = 0) ->
         logger.warning("Failed to log tool result", exc_info=True)
 
 
+def log_stream_summary(session_id: Optional[str], sent: int, failed: int) -> None:
+    """Record how many graph notifications actually left the process.
+
+    Sits next to the NODE/EDGE lines on purpose: it answers "did the client get
+    this graph", which is otherwise indistinguishable from "the client ignored
+    it".
+    """
+    _ensure_configured()
+    if _existing_handler() is None:
+        return
+    try:
+        _graph_logger.info(
+            "sid=%s | STREAM     | notifications sent=%d failed=%d",
+            session_id or "-", sent, failed,
+        )
+    except Exception:
+        logger.warning("Failed to log stream summary", exc_info=True)
+
+
 def log_graph_event(event, session_id: Optional[str] = None, step: int = 0) -> None:
     """Write one narrative event as a single line. Never raises."""
     _ensure_configured()
