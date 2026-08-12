@@ -15,8 +15,10 @@ Usage:
 """
 
 import argparse
+import asyncio
 import logging
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -27,11 +29,13 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from biodsa.mcp.config import MCPServerConfig
+from biodsa.narrative.broadcaster import EventBroadcaster
 
 # ---------------------------------------------------------------------------
 # Shared state
 # ---------------------------------------------------------------------------
 _config: Optional[MCPServerConfig] = None
+_broadcaster: EventBroadcaster = EventBroadcaster()
 
 
 def _agent_kwargs() -> dict:
@@ -64,7 +68,7 @@ def _fmt_results(results, max_code_len: int = 800) -> str:
 # Tool implementations
 # ---------------------------------------------------------------------------
 
-async def tool_deepevidence_research(research_question: str, knowledge_bases: Optional[List[str]] = None) -> str:
+async def tool_deepevidence_research(research_question: str, knowledge_bases: Optional[List[str]] = None, session_id: Optional[str] = None) -> str:
     """Deep biomedical research across 10 knowledge bases.
 
     Uses a hierarchical orchestrator + BFS/DFS sub-agents to gather and
@@ -76,10 +80,17 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
         knowledge_bases: Optional list of knowledge bases to search.
             Valid values: pubmed_papers, gene, disease, drug, variant,
             clinical_trials, web_search, target, pathway, compound.
+        session_id: Optional client-generated session ID for narrative
+            graph event streaming.
     """
     from biodsa.agents.deepevidence.agent import DeepEvidenceAgent
+    from biodsa.narrative.events import RunComplete
+    from biodsa.memory.memory_graph import load_graph_data
+    from mcp.server.lowlevel.server import request_ctx
+    from mcp.types import Notification
 
     agent = None
+    consumer_task = None
     t_start = time.time()
     try:
         kwargs = _agent_kwargs()
@@ -87,15 +98,66 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
         kwargs.setdefault("small_model_api_type", "local")
         kwargs.setdefault("small_model_api_key", _config.api_key)
         kwargs.setdefault("small_model_endpoint", _config.endpoint)
-        logging.info("DeepEvidence: creating agent for query=%s", research_question[:80])
+        if session_id:
+            kwargs["broadcaster"] = _broadcaster
+            kwargs["session_id"] = session_id
+            _broadcaster.create_run(session_id)
+            # Start consumer task: broadcaster events → MCP notifications
+            try:
+                ctx = request_ctx.get()
+                mcp_session = ctx.session
+                _sid = session_id
+                # Without related_request_id the SDK routes notifications to the
+                # standalone GET SSE stream, which streamable-http clients such
+                # as WeKnora never open -- the events would be silently dropped.
+                _req_id = ctx.request_id
+                async def _stream_to_mcp():
+                    seq = 0
+                    async for event in _broadcaster.subscribe_events(_sid):
+                        seq += 1
+                        notification = Notification(
+                            method="notifications/biodsa/graph_event",
+                            params={
+                                "session_id": _sid,
+                                "seq": seq,
+                                "event": event.to_dict(),
+                            },
+                        )
+                        await mcp_session.send_notification(
+                            notification,
+                            related_request_id=_req_id,
+                        )
+                consumer_task = asyncio.create_task(_stream_to_mcp())
+                logging.info("DeepEvidence: MCP notification consumer started for session=%s", session_id)
+            except LookupError:
+                logging.warning("DeepEvidence: no MCP request context, graph events will not be streamed")
+        logging.info("DeepEvidence: creating agent for query=%s session=%s", research_question[:80], session_id)
         agent = DeepEvidenceAgent(**kwargs)
         go_kwargs = {"input_query": research_question}
         if knowledge_bases:
             go_kwargs["knowledge_bases"] = knowledge_bases
-        logging.info("DeepEvidence: agent.go() starting (kbs=%s)", go_kwargs.get("knowledge_bases", "all"))
-        results = agent.go(**go_kwargs)
+        logging.info("DeepEvidence: agent.go() starting (kbs=%s, session=%s)",
+                     go_kwargs.get("knowledge_bases", "all"), session_id)
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(None, lambda: agent.go(**go_kwargs))
         elapsed = time.time() - t_start
         logging.info("DeepEvidence: agent.go() done in %.0fs", elapsed)
+        # Push final graph snapshot
+        if session_id:
+            try:
+                graph_data = results.evidence_graph_data if results else {}
+                entities = graph_data.get("entities", []) if isinstance(graph_data, dict) else []
+                relations = graph_data.get("relations", []) if isinstance(graph_data, dict) else []
+                total_steps = len(results.message_history) if results and results.message_history else 0
+                _broadcaster.emit_sync(session_id, RunComplete(
+                    entities=entities,
+                    relations=relations,
+                    total_steps=total_steps,
+                    duration_seconds=elapsed,
+                    final_response_preview=(results.final_response or "")[:200] if results else "",
+                ))
+            except Exception:
+                logging.warning("Failed to push RunComplete event", exc_info=True)
         return _fmt_results(results)
     except Exception:
         elapsed = time.time() - t_start
@@ -104,6 +166,21 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
     finally:
         if agent is not None:
             agent.sandbox = None
+        if session_id:
+            _broadcaster.close_run(session_id)
+            if consumer_task is not None:
+                try:
+                    await consumer_task
+                except Exception:
+                    logging.warning("Graph event consumer task failed", exc_info=True)
+            # The graph already reached the client in the RunComplete snapshot,
+            # so the per-session copy on disk is no longer needed.
+            try:
+                cache_dir = getattr(agent, "evidence_graph_cache_dir", None)
+                if cache_dir and os.path.basename(os.path.dirname(str(cache_dir))) == "sessions":
+                    shutil.rmtree(cache_dir, ignore_errors=True)
+            except Exception:
+                logging.warning("Failed to clean session graph dir", exc_info=True)
 
 
 async def tool_systematic_review(research_question: str, target_outcomes: Optional[List[str]] = None) -> str:
@@ -317,6 +394,10 @@ def _build_mcp_app():
                             "description": "Optional list of knowledge bases. "
                             "Valid values: pubmed_papers, gene, disease, drug, variant, "
                             "clinical_trials, web_search, target, pathway, compound.",
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Optional client-generated session ID for real-time graph event streaming.",
                         },
                     },
                     "required": ["research_question"],

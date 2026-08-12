@@ -64,6 +64,16 @@ from biodsa.agents.deepevidence.tool_wrappers.drugs.tools import (
     UnifiedDrugDetailsFetchTool,
 )
 
+
+def _safe_dir_name(name: str) -> str:
+    """Make a caller-supplied session id usable as a directory name.
+
+    Callers may pass composite ids such as "<message_id>:<tool_call_id>", and
+    ':' is not a legal path character on Windows.
+    """
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in name) or "default"
+
+
 class DeepEvidenceAgent(BaseAgent):
     name = "deepevidence"
     small_model_name: str = None
@@ -96,6 +106,8 @@ class DeepEvidenceAgent(BaseAgent):
         subagent_action_rounds_budget: int = 5,
         light_mode: bool = False,
         llm_timeout: Optional[float] = None,
+        broadcaster = None,
+        session_id: Optional[str] = None,
         **kwargs
     ):
         super().__init__(
@@ -123,6 +135,13 @@ class DeepEvidenceAgent(BaseAgent):
         if evidence_graph_cache_dir is None:
             # assign a default value
             evidence_graph_cache_dir = get_default_memory_graph_cache_dir()
+            if session_id:
+                # go() wipes this directory on every run, so concurrent sessions
+                # sharing the global default would delete each other's graph.
+                evidence_graph_cache_dir = os.path.join(
+                    str(evidence_graph_cache_dir), "sessions", _safe_dir_name(session_id)
+                )
+                os.makedirs(evidence_graph_cache_dir, exist_ok=True)
 
         self.evidence_graph_cache_dir = evidence_graph_cache_dir
         self.main_search_rounds_budget = main_search_rounds_budget
@@ -132,6 +151,10 @@ class DeepEvidenceAgent(BaseAgent):
         self.umls_api_key = os.getenv("UMLS_API_KEY")
 
         self.light_mode = light_mode # a light mode agent that does not use the memory graph
+        self.broadcaster = broadcaster
+        self._session_id = session_id
+        self._event_counts: dict[str, int] = {}
+        self._current_phase: str = ""
         self.agent_graph = self._create_agent_graph()
 
         # debug: visualize the agent graph
@@ -773,6 +796,9 @@ class DeepEvidenceAgent(BaseAgent):
                          input_query[:80], knowledge_bases)
             step_num = 0
             t_start = time.time()
+            # stream_mode="values" replays the whole state on every step, so the
+            # last message repeats whenever a step does not append one.
+            seen_message_ids: set[str] = set()
             # Invoke the agent graph and return the result
             for streamed_chunk in self.agent_graph.stream(
                 inputs,
@@ -798,6 +824,37 @@ class DeepEvidenceAgent(BaseAgent):
                 if verbose:
                     print(render_message_colored(last_message, show_tool_calls=True))
                 all_results.append(chunk)
+                # ── narrative events ──
+                msg_id = getattr(last_message, "id", None)
+                is_new_message = msg_id is None or msg_id not in seen_message_ids
+                if msg_id is not None:
+                    seen_message_ids.add(msg_id)
+
+                if self.broadcaster is not None and self._session_id and is_new_message:
+                    try:
+                        from biodsa.narrative.extractor import extract_events
+                        from biodsa.narrative.events import Progress, PhaseChange
+                        events = extract_events(last_message, step_num)
+                        for evt in events:
+                            self.broadcaster.emit_sync(self._session_id, evt)
+                            # Accumulate on every step; the periodic Progress
+                            # event only reports the running totals.
+                            tn = type(evt).__name__
+                            if tn in ("EntitySearching", "EntityConfirmed", "RelationFound"):
+                                self._event_counts[tn] = self._event_counts.get(tn, 0) + 1
+                            if isinstance(evt, PhaseChange):
+                                self._current_phase = evt.phase
+                        # periodic progress
+                        if step_num % 5 == 0:
+                            self.broadcaster.emit_sync(self._session_id, Progress(
+                                step=step_num,
+                                total_steps_estimate=30,
+                                entities_found=self._event_counts.get("EntityConfirmed", 0),
+                                relations_found=self._event_counts.get("RelationFound", 0),
+                                current_phase=getattr(self, "_current_phase", ""),
+                            ))
+                    except Exception:
+                        logging.warning("Narrative event extraction/emit failed", exc_info=True)
             logging.info("DeepEvidence: stream done: %d steps in %.0fs",
                          step_num, time.time() - t_start)
             return all_results
