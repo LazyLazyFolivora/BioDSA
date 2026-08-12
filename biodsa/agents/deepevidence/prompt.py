@@ -164,6 +164,7 @@ Each item in the graph should represent a unique and reusable concept — not a 
 
 ### Relations
 - Mechanistic: ACTIVATES, INHIBITS, BINDS, PHOSPHORYLATES, REGULATES_EXPRESSION
+- Therapeutic: TREATS, TARGETS
 - Membership/annotation: MEMBER_OF_PATHWAY, HAS_GENESET_MEMBER, EXPRESSED_IN
 - Association: ASSOCIATED_WITH, CO_OCCURS (use only when no precise predicate applies)
 - Evidence-level: SUPPORTS, REFUTES, INCONCLUSIVE_FOR, CITES
@@ -182,7 +183,17 @@ Each item in the graph should represent a unique and reusable concept — not a 
   "EGFR" and "egfr" become two nodes; pick the canonical form and reuse it.
 
 ## 3. Relation Standards
-- Use the smallest consistent predicate set; do not introduce new verbs unless absolutely needed.
+- Pick the most precise predicate from the lists above, and do not invent verbs
+  outside them. Reusing one predicate for everything is not economy: a graph whose
+  edges are all MEMBER_OF_PATHWAY records no mechanism at all.
+- Typical pairings:
+  - gene or protein with a disease → ASSOCIATED_WITH
+  - gene or protein with a pathway → MEMBER_OF_PATHWAY
+  - drug with its molecular target → INHIBITS / ACTIVATES / BINDS / TARGETS
+  - drug with a disease → TREATS
+  - a FINDING with the entity it is evidence about → SUPPORTS / REFUTES
+- MEMBER_OF_PATHWAY takes a pathway as its object. A disease is not a pathway, and
+  a pathway is not a member of a disease.
 - Direction: always subject → object, never reversed for stylistic reasons.
 - Avoid generic ASSOCIATED_WITH edges when context is already captured in the observation text.
 - Limit contextual edges:
