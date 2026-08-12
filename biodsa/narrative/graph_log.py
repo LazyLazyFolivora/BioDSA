@@ -174,6 +174,59 @@ def log_stream_summary(session_id: Optional[str], sent: int, failed: int) -> Non
         logger.warning("Failed to log stream summary", exc_info=True)
 
 
+def _node_fields(entity: dict) -> tuple:
+    """The graph store writes camelCase; extractors write snake_case."""
+    name = entity.get("name", "")
+    etype = entity.get("entityType") or entity.get("entity_type") or ""
+    observations = entity.get("observations") or []
+    return name, etype, observations
+
+
+def _edge_fields(relation: dict) -> tuple:
+    src = relation.get("from") or relation.get("from_entity") or ""
+    dst = relation.get("to") or relation.get("to_entity") or ""
+    rtype = relation.get("relationType") or relation.get("relation_type") or ""
+    return src, dst, rtype
+
+
+def log_graph_write(
+    session_id: Optional[str],
+    entities,
+    relations,
+    source: str = "",
+    step: int = 0,
+) -> None:
+    """Record nodes and relations as they are written, not just at the end.
+
+    An agent that derives its graph from tool output rather than from its own
+    tool calls produces no add_to_graph line to trace, so without this the log
+    would jump from SEARCHING straight to the end-of-run totals.
+    """
+    _ensure_configured()
+    if _existing_handler() is None:
+        return
+    try:
+        sid = session_id or "-"
+        for entity in entities or []:
+            if not isinstance(entity, dict):
+                continue
+            name, etype, observations = _node_fields(entity)
+            _graph_logger.info(
+                "sid=%s | step=%3d | NODE       | %-10s | %s | src=%s",
+                sid, step, etype, _truncate(name), source or "-",
+            )
+        for relation in relations or []:
+            if not isinstance(relation, dict):
+                continue
+            src, dst, rtype = _edge_fields(relation)
+            _graph_logger.info(
+                "sid=%s | step=%3d | EDGE       | %s -[%s]-> %s",
+                sid, step, _truncate(src, 60), rtype, _truncate(dst, 60),
+            )
+    except Exception:
+        logger.warning("Failed to log graph write", exc_info=True)
+
+
 def log_graph_event(event, session_id: Optional[str] = None, step: int = 0) -> None:
     """Write one narrative event as a single line. Never raises."""
     _ensure_configured()
@@ -245,10 +298,7 @@ def log_run_summary(
         for ent in entities:
             if not isinstance(ent, dict):
                 continue
-            # The graph store writes camelCase; tolerate both spellings.
-            name = ent.get("name", "")
-            etype = ent.get("entityType") or ent.get("entity_type") or ""
-            observations = ent.get("observations") or []
+            name, etype, observations = _node_fields(ent)
             _graph_logger.info(
                 "sid=%s |   NODE     | %-10s | %s | obs=%d",
                 sid, etype, _truncate(name), len(observations),
@@ -256,9 +306,7 @@ def log_run_summary(
         for rel in relations:
             if not isinstance(rel, dict):
                 continue
-            src = rel.get("from") or rel.get("from_entity") or ""
-            dst = rel.get("to") or rel.get("to_entity") or ""
-            rtype = rel.get("relationType") or rel.get("relation_type") or ""
+            src, dst, rtype = _edge_fields(rel)
             _graph_logger.info(
                 "sid=%s |   EDGE     | %s -[%s]-> %s",
                 sid, _truncate(src, 60), rtype, _truncate(dst, 60),

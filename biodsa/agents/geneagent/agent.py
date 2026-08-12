@@ -59,6 +59,7 @@ from biodsa.agents.geneagent.prompt import (
     format_verification_prompt,
 )
 from biodsa.agents.geneagent.tools import get_geneagent_tools
+from biodsa.memory.memory_graph import ToolGraphObserver, resolve_graph_cache_dir
 from biodsa.sandbox.execution import ExecutionResults
 
 
@@ -98,6 +99,10 @@ class GeneAgent(BaseAgent):
         max_claims_per_stage: int = None,
         temperature: float = 1.0,
         include_verification_reports: bool = True,
+        build_knowledge_graph: bool = True,
+        evidence_graph_name: str = "evidence_graph",
+        evidence_graph_cache_dir: str = None,
+        session_id: Optional[str] = None,
         **kwargs
     ):
         """
@@ -114,6 +119,16 @@ class GeneAgent(BaseAgent):
                                   Set to 1-3 for quick demos.
             temperature: LLM temperature for generation (default: 1.0)
             include_verification_reports: Include verification reports in output (default: True)
+            build_knowledge_graph: Record a knowledge graph from the databases the
+                                  verification worker queries (default: True). The
+                                  recorder only observes: it adds no tools, no
+                                  prompts and no LLM calls, so the analysis this
+                                  agent produces is identical either way.
+            evidence_graph_name: Graph to write into, shared with the other agents
+                                  so one view can render everything.
+            evidence_graph_cache_dir: Graph store location (default: per-session)
+            session_id: Session identifier, used to isolate the graph store and to
+                                  tag lines in the graph event log
             **kwargs: Additional arguments passed to the base agent
         """
         # Initialize base agent (sandbox not needed for GeneAgent)
@@ -129,7 +144,17 @@ class GeneAgent(BaseAgent):
         self.max_claims_per_stage = max_claims_per_stage
         self.temperature = temperature
         self.include_verification_reports = include_verification_reports
-        
+
+        self.build_knowledge_graph = build_knowledge_graph
+        self.evidence_graph_name = evidence_graph_name
+        (
+            self.evidence_graph_cache_dir,
+            self.owns_evidence_graph_cache_dir,
+        ) = resolve_graph_cache_dir(evidence_graph_cache_dir, session_id)
+        self._session_id = session_id
+        # Created per run, once the gene set is known.
+        self._graph_observer: Optional[ToolGraphObserver] = None
+
         # Build the agent graph
         self.agent_graph = self._create_agent_graph()
     
@@ -390,6 +415,9 @@ class GeneAgent(BaseAgent):
                         if function_name in tool_dict:
                             tool = tool_dict[function_name]
                             function_response = tool._run(**function_params)
+                            self._observe_for_graph(
+                                function_name, function_params, function_response
+                            )
                             function_response = f"Function has been called with params {function_params}, and returns {function_response}."
                         else:
                             function_response = f"Unknown function: {function_name}"
@@ -424,6 +452,92 @@ class GeneAgent(BaseAgent):
         
         return "Failed to verify claim within maximum rounds."
     
+    # =========================================================================
+    # Knowledge graph (observation only)
+    # =========================================================================
+
+    def _create_graph_observer(self, gene_list: List[str]) -> Optional[ToolGraphObserver]:
+        """Start a recorder for this run, or None if graph building is off."""
+        if not self.build_knowledge_graph:
+            return None
+        try:
+            return ToolGraphObserver(
+                context=self.evidence_graph_name,
+                cache_dir=self.evidence_graph_cache_dir,
+                session_id=self._session_id,
+                known_genes=gene_list,
+            )
+        except Exception as e:
+            print(f"Knowledge graph recording disabled for this run: {e}")
+            return None
+
+    def _observe_for_graph(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_result: Any
+    ) -> None:
+        """Record graph structure from a tool response.
+
+        Deliberately reads the raw response before it is wrapped for the model:
+        the point of observing rather than instrumenting is that the message
+        history the agent reasons over stays exactly as the original method
+        defined it.
+        """
+        if self._graph_observer is None:
+            return
+        try:
+            self._graph_observer.observe(tool_name, tool_args, tool_result)
+        except Exception as e:
+            # A side effect must never cost the agent a verification.
+            print(f"Graph observation skipped for {tool_name}: {e}")
+
+    def _log_graph_summary(self, query: str) -> None:
+        """Record end-of-run graph totals where an operator can read them."""
+        if self._graph_observer is None:
+            return
+        try:
+            entities, relations = self._graph_observer.log_run_summary(query=query)
+            print(
+                f"\nKnowledge graph: {entities} entities, {relations} relations "
+                f"({self.evidence_graph_cache_dir})"
+            )
+            if self._graph_observer.failures:
+                print(
+                    f"Graph writes that failed: {self._graph_observer.failures} "
+                    f"(see the log for details)"
+                )
+        except Exception as e:
+            print(f"Could not summarize the knowledge graph: {e}")
+
+    def _record_gene_set_conclusion(
+        self,
+        process_name: str,
+        gene_list: List[str],
+        claims_verified: int
+    ) -> None:
+        """Write the agent's own finding: this gene set performs this process.
+
+        The database facts collected during verification are the evidence; this
+        is the claim they support, and without it the graph is a scatter of
+        gene-level edges with no centre.
+        """
+        if self._graph_observer is None:
+            return
+        process_name = (process_name or "").strip()
+        if not process_name:
+            return
+        try:
+            observations = [
+                f"Gene set of {len(gene_list)} genes annotated by GeneAgent after "
+                f"verifying {claims_verified} claims against domain databases"
+            ]
+            self._graph_observer.record_gene_set(
+                process_name, gene_list, observations
+            )
+        except Exception as e:
+            print(f"Could not record the gene set conclusion: {e}")
+
     def _should_continue_verification(
         self,
         state: GeneAgentState
@@ -572,7 +686,11 @@ class GeneAgent(BaseAgent):
         
         print(f"\nFinal Process: {final_process}")
         print(f"\nFinal Summary:\n{final_summary}")
-        
+
+        self._record_gene_set_conclusion(
+            final_process, state.gene_list, state.total_claims_verified
+        )
+
         return {
             "messages": messages + [response],
             "final_process_name": final_process,
@@ -653,7 +771,9 @@ class GeneAgent(BaseAgent):
         
         if not gene_set_normalized:
             return [{"error": "gene_set is required"}]
-        
+
+        self._graph_observer = self._create_graph_observer(gene_list)
+
         try:
             all_results = []
             
@@ -683,6 +803,10 @@ class GeneAgent(BaseAgent):
         except Exception as e:
             print(f"Error during execution: {e}")
             raise e
+        finally:
+            # Also on failure: a run that died halfway may still have built a
+            # usable graph, and the totals are the only record of it.
+            self._log_graph_summary(gene_set_normalized)
     
     def go(
         self,
@@ -709,7 +833,7 @@ class GeneAgent(BaseAgent):
                 code_execution_results=[],
                 final_response=str(results[0].get("error", "Unknown error"))
             )
-        
+
         final_state = results[-1]
         message_history = self._format_messages(final_state.get('messages', []))
         

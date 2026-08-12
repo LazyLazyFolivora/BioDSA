@@ -270,20 +270,26 @@ async def tool_systematic_review(research_question: str, target_outcomes: Option
             agent.sandbox = None
 
 
-async def tool_gene_analysis(gene_set: str) -> str:
+async def tool_gene_analysis(gene_set: str, session_id: Optional[str] = None) -> str:
     """Gene set analysis with self-verification (GeneAgent).
 
     Performs cascade verification: functional enrichment, literature-backed
     claim generation, and database-backed claim verification.
 
+    A knowledge graph is recorded from the databases the verification worker
+    queries. It is written by observation rather than by the agent, so the
+    analysis is identical whether or not the graph is being built.
+
     Args:
         gene_set: Comma-separated gene symbols. E.g. "ERBB2,EGFR,KRAS,TP53".
+        session_id: Optional client-generated session ID. Isolates this run's
+            graph from concurrent runs and tags its graph event log lines.
     """
     from biodsa.agents.geneagent.agent import GeneAgent
 
     agent = None
     try:
-        agent = GeneAgent(**_agent_kwargs())
+        agent = GeneAgent(session_id=session_id, **_agent_kwargs())
         results = agent.go(gene_set=gene_set)
         return _fmt_results(results)
     except Exception:
@@ -484,13 +490,18 @@ def _build_mcp_app():
             ),
             Tool(
                 name="biodsa_gene_analysis",
-                description="Gene set analysis with self-verification (enrichment + literature + database verification).",
+                description="Gene set analysis with self-verification (enrichment + literature + database verification). "
+                "Records a knowledge graph of the gene, pathway and disease links found during verification.",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "gene_set": {
                             "type": "string",
                             "description": "Comma-separated gene symbols. E.g. 'ERBB2,EGFR,KRAS,TP53'.",
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Optional client-generated session ID. Isolates this run's knowledge graph and tags its graph event log.",
                         },
                     },
                     "required": ["gene_set"],

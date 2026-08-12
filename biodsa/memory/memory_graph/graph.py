@@ -30,6 +30,41 @@ def get_default_memory_graph_cache_dir() -> Path:
     else:
         return Path(REPO_BASE_DIR) / ".biodsa_memory" / "memory_graph"
 
+def safe_dir_name(name: str) -> str:
+    """Make a caller-supplied session id usable as a directory name.
+
+    Callers may pass composite ids such as "<message_id>:<tool_call_id>", and
+    ':' is not a legal path character on Windows.
+
+    '.' is deliberately excluded from the allowed set: the session id reaches us
+    from an MCP client and is partly LLM-generated, so a value of "." or ".."
+    would otherwise escape the sessions directory and get wiped by callers that
+    clear their own cache.
+    """
+    return "".join(c if c.isalnum() or c in "_-" else "_" for c in name) or "default"
+
+
+def resolve_graph_cache_dir(
+    cache_dir: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> Tuple[str, bool]:
+    """Pick the graph store location for one run.
+
+    Returns (path, owns_path). `owns_path` is True only for a private directory
+    created here for this session, which is the one case where a caller may
+    safely delete it afterwards; a caller-supplied directory is never ours to
+    remove.
+    """
+    if cache_dir is not None:
+        return str(cache_dir), False
+    base = get_default_memory_graph_cache_dir()
+    if not session_id:
+        return str(base), False
+    path = os.path.join(str(base), "sessions", safe_dir_name(session_id))
+    os.makedirs(path, exist_ok=True)
+    return path, True
+
+
 def get_memory_file_path(cache_dir: Path, context: Optional[str] = None) -> Path:
     """Get the file path for storing memory data."""
     filename = "memory.jsonl" if context is None else f"memory-{context}.jsonl"

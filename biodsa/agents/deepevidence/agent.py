@@ -44,7 +44,7 @@ from biodsa.agents.deepevidence.orchestrator_tool import (
 from biodsa.agents.deepevidence.schema import KNOWLEDGE_BASE_TO_TOOLS_MAP, KNOWLEDGE_BASE_LIST
 from biodsa.utils.render_utils import render_message_colored
 from biodsa.memory.graph import AddToGraph, RetrieveFromGraph, load_graph_data
-from biodsa.memory.memory_graph import get_default_memory_graph_cache_dir, clear_manager_cache
+from biodsa.memory.memory_graph import resolve_graph_cache_dir, clear_manager_cache
 from biodsa.tool_wrappers.pubmed.tools import (
     FindEntitiesTool,
     FindRelatedEntitiesTool,
@@ -97,20 +97,6 @@ def _is_free_graph_turn(response, used: int, limit: int) -> bool:
 # Enough to cover a normal run's graph, bounded so a large one cannot crowd out
 # the conversation.
 MAX_LISTED_ENTITIES = 150
-
-
-def _safe_dir_name(name: str) -> str:
-    """Make a caller-supplied session id usable as a directory name.
-
-    Callers may pass composite ids such as "<message_id>:<tool_call_id>", and
-    ':' is not a legal path character on Windows.
-
-    '.' is deliberately excluded from the allowed set: the session id reaches us
-    from an MCP client and is partly LLM-generated, so a value of "." or ".."
-    would otherwise escape the sessions directory and get wiped by the rmtree in
-    go().
-    """
-    return "".join(c if c.isalnum() or c in "_-" else "_" for c in name) or "default"
 
 
 class DeepEvidenceAgent(BaseAgent):
@@ -171,22 +157,13 @@ class DeepEvidenceAgent(BaseAgent):
             self.small_model_api_key = small_model_api_key
             self.small_model_endpoint = small_model_endpoint
 
-        # True only when we created a private directory for this session, which
-        # is the one case where a caller may safely delete it afterwards.
-        self.owns_evidence_graph_cache_dir = False
-        if evidence_graph_cache_dir is None:
-            # assign a default value
-            evidence_graph_cache_dir = get_default_memory_graph_cache_dir()
-            if session_id:
-                # go() wipes this directory on every run, so concurrent sessions
-                # sharing the global default would delete each other's graph.
-                evidence_graph_cache_dir = os.path.join(
-                    str(evidence_graph_cache_dir), "sessions", _safe_dir_name(session_id)
-                )
-                os.makedirs(evidence_graph_cache_dir, exist_ok=True)
-                self.owns_evidence_graph_cache_dir = True
-
-        self.evidence_graph_cache_dir = evidence_graph_cache_dir
+        # go() wipes this directory on every run, so concurrent sessions sharing
+        # the global default would delete each other's graph. owns_* is True only
+        # for a directory created here, the one case where deleting it is safe.
+        (
+            self.evidence_graph_cache_dir,
+            self.owns_evidence_graph_cache_dir,
+        ) = resolve_graph_cache_dir(evidence_graph_cache_dir, session_id)
         self.main_search_rounds_budget = main_search_rounds_budget
         self.main_action_rounds_budget = main_action_rounds_budget
         self.subagent_action_rounds_budget = subagent_action_rounds_budget
