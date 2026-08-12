@@ -89,6 +89,7 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
     """
     from biodsa.agents.deepevidence.agent import DeepEvidenceAgent
     from biodsa.narrative.events import RunComplete
+    from biodsa.narrative.graph_log import log_run_summary
     from biodsa.memory.memory_graph import load_graph_data
     from mcp.server.lowlevel.server import request_ctx
     from mcp.types import Notification
@@ -154,12 +155,19 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
         results = await loop.run_in_executor(None, lambda: agent.go(**go_kwargs))
         elapsed = time.time() - t_start
         logging.info("DeepEvidence: agent.go() done in %.0fs", elapsed)
+        try:
+            graph_data = results.evidence_graph_data if results else {}
+            entities = graph_data.get("entities", []) if isinstance(graph_data, dict) else []
+            relations = graph_data.get("relations", []) if isinstance(graph_data, dict) else []
+        except Exception:
+            entities, relations = [], []
+            logging.warning("Could not read evidence graph data", exc_info=True)
+        # Recorded regardless of streaming: this is the only place the finished
+        # graph is persisted anywhere the operator can read it.
+        log_run_summary(session_id, entities, relations, elapsed, research_question)
         # Push final graph snapshot
         if streaming:
             try:
-                graph_data = results.evidence_graph_data if results else {}
-                entities = graph_data.get("entities", []) if isinstance(graph_data, dict) else []
-                relations = graph_data.get("relations", []) if isinstance(graph_data, dict) else []
                 total_steps = len(results.message_history) if results and results.message_history else 0
                 _broadcaster.emit_sync(session_id, RunComplete(
                     entities=entities,
@@ -392,6 +400,9 @@ def parse_args() -> argparse.Namespace:
                    help="MCP transport protocol (default: sse). "
                         "streamable-http avoids the 60s SSE timeout in mcp-go clients.")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    p.add_argument("--graph-log-dir", default=os.environ.get("BIODSA_GRAPH_LOG_DIR"),
+                   help="Directory for the daily-rotating knowledge-graph event log "
+                        "(default: <REPO_BASE_DIR or ~>/.biodsa_memory/graph_events).")
     return p.parse_args()
 
 
@@ -663,6 +674,11 @@ def main() -> None:
         level=getattr(logging, args.log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    from biodsa.narrative.graph_log import configure_graph_log
+    graph_log_path = configure_graph_log(args.graph_log_dir)
+    if graph_log_path is not None:
+        logging.info("Knowledge-graph event log: %s", graph_log_path)
 
     global _config
     _config = MCPServerConfig(

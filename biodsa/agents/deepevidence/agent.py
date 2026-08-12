@@ -843,29 +843,9 @@ class DeepEvidenceAgent(BaseAgent):
                 if msg_id is not None:
                     seen_message_ids.add(msg_id)
 
-                if self.broadcaster is not None and self._session_id and is_new_message:
+                if is_new_message:
                     try:
-                        from biodsa.narrative.extractor import extract_events
-                        from biodsa.narrative.events import Progress, PhaseChange
-                        events = extract_events(last_message, step_num)
-                        for evt in events:
-                            self.broadcaster.emit_sync(self._session_id, evt)
-                            # Accumulate on every step; the periodic Progress
-                            # event only reports the running totals.
-                            tn = type(evt).__name__
-                            if tn in ("EntitySearching", "EntityConfirmed", "RelationFound"):
-                                self._event_counts[tn] = self._event_counts.get(tn, 0) + 1
-                            if isinstance(evt, PhaseChange):
-                                self._current_phase = evt.phase
-                        # periodic progress
-                        if step_num % 5 == 0:
-                            self.broadcaster.emit_sync(self._session_id, Progress(
-                                step=step_num,
-                                total_steps_estimate=30,
-                                entities_found=self._event_counts.get("EntityConfirmed", 0),
-                                relations_found=self._event_counts.get("RelationFound", 0),
-                                current_phase=self._current_phase,
-                            ))
+                        self._record_narrative_events(last_message, step_num)
                     except Exception:
                         logging.warning("Narrative event extraction/emit failed", exc_info=True)
             logging.info("DeepEvidence: stream done: %d steps in %.0fs",
@@ -875,6 +855,39 @@ class DeepEvidenceAgent(BaseAgent):
         except Exception as e:
             print(f"Error streaming response: {e}")
             raise e
+
+    def _record_narrative_events(self, message, step_num: int) -> None:
+        """Log each graph event to disk, and stream it when a consumer exists.
+
+        Disk logging is deliberately independent of the broadcaster: the node and
+        relation trail should be available for every run, including ones that are
+        not streaming to an MCP client.
+        """
+        from biodsa.narrative.extractor import extract_events
+        from biodsa.narrative.events import Progress, PhaseChange
+        from biodsa.narrative.graph_log import log_graph_event
+
+        streaming = self.broadcaster is not None and bool(self._session_id)
+        for evt in extract_events(message, step_num):
+            log_graph_event(evt, session_id=self._session_id, step=step_num)
+            if streaming:
+                self.broadcaster.emit_sync(self._session_id, evt)
+            # Accumulate on every step; the periodic Progress event only reports
+            # the running totals.
+            tn = type(evt).__name__
+            if tn in ("EntitySearching", "EntityConfirmed", "RelationFound"):
+                self._event_counts[tn] = self._event_counts.get(tn, 0) + 1
+            if isinstance(evt, PhaseChange):
+                self._current_phase = evt.phase
+
+        if streaming and step_num % 5 == 0:
+            self.broadcaster.emit_sync(self._session_id, Progress(
+                step=step_num,
+                total_steps_estimate=30,
+                entities_found=self._event_counts.get("EntityConfirmed", 0),
+                relations_found=self._event_counts.get("RelationFound", 0),
+                current_phase=self._current_phase,
+            ))
 
     def go(
         self,
