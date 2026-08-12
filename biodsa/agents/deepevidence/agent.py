@@ -865,9 +865,12 @@ class DeepEvidenceAgent(BaseAgent):
         """
         from biodsa.narrative.extractor import extract_events
         from biodsa.narrative.events import Progress, PhaseChange
-        from biodsa.narrative.graph_log import log_graph_event, log_tool_calls
+        from biodsa.narrative.graph_log import (
+            log_graph_event, log_tool_calls, log_tool_result,
+        )
 
         log_tool_calls(message, session_id=self._session_id, step=step_num)
+        log_tool_result(message, session_id=self._session_id, step=step_num)
         streaming = self.broadcaster is not None and bool(self._session_id)
         for evt in extract_events(message, step_num):
             log_graph_event(evt, session_id=self._session_id, step=step_num)

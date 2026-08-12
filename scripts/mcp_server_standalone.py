@@ -18,7 +18,6 @@ import argparse
 import asyncio
 import logging
 import os
-import shutil
 import sys
 import time
 import traceback
@@ -209,15 +208,16 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
                     )
                 except Exception:
                     logging.warning("Graph event consumer task failed", exc_info=True)
-        # The graph already reached the client in the RunComplete snapshot, so
-        # the per-session copy on disk is no longer needed. Only ever delete a
-        # directory the agent created itself, never a caller-supplied or shared
-        # one.
+        # The per-session graph is kept: it is the only durable copy of the nodes
+        # and relations, the client cannot ask for it again, and deleting it makes
+        # an empty graph indistinguishable from a failed write. go() clears the
+        # directory at the start of each run, so a session does not accumulate.
         try:
             if agent is not None and agent.owns_evidence_graph_cache_dir:
-                shutil.rmtree(agent.evidence_graph_cache_dir, ignore_errors=True)
+                logging.info("DeepEvidence: session graph at %s",
+                             agent.evidence_graph_cache_dir)
         except Exception:
-            logging.warning("Failed to clean session graph dir", exc_info=True)
+            logging.warning("Failed to report session graph dir", exc_info=True)
 
 
 async def tool_systematic_review(research_question: str, target_outcomes: Optional[List[str]] = None) -> str:

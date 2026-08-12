@@ -127,6 +127,34 @@ def log_tool_calls(message, session_id: Optional[str] = None, step: int = 0) -> 
         logger.warning("Failed to log tool calls", exc_info=True)
 
 
+GRAPH_TOOLS = ("add_to_graph", "retrieve_from_graph")
+
+
+def log_tool_result(message, session_id: Optional[str] = None, step: int = 0) -> None:
+    """Record what a graph tool actually returned.
+
+    The CALL line only proves the model asked for the tool. These tools report
+    failures as a JSON payload rather than raising, so without the result a
+    rejected write is indistinguishable from a successful one.
+    """
+    _ensure_configured()
+    if _existing_handler() is None:
+        return
+    try:
+        name = getattr(message, "name", None)
+        if name not in GRAPH_TOOLS:
+            return
+        content = getattr(message, "content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        _graph_logger.info(
+            "sid=%s | step=%3d | RESULT     | %-18s | %s",
+            session_id or "-", step, name, _truncate(content, 300),
+        )
+    except Exception:
+        logger.warning("Failed to log tool result", exc_info=True)
+
+
 def log_graph_event(event, session_id: Optional[str] = None, step: int = 0) -> None:
     """Write one narrative event as a single line. Never raises."""
     _ensure_configured()
