@@ -104,6 +104,29 @@ def _truncate(text: str, limit: int = 120) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+def log_tool_calls(message, session_id: Optional[str] = None, step: int = 0) -> None:
+    """Record the raw tool-call sequence for one step.
+
+    Tools with no graph meaning (code execution, graph retrieval) produce no
+    event of their own, which used to leave gaps in the step numbers and made it
+    impossible to tell whether the agent ever called add_to_graph at all.
+    """
+    _ensure_configured()
+    if _existing_handler() is None:
+        return
+    try:
+        calls = getattr(message, "tool_calls", None) or []
+        names = [c.get("name", "?") for c in calls if isinstance(c, dict)]
+        if not names:
+            return
+        _graph_logger.info(
+            "sid=%s | step=%3d | CALL       | %s",
+            session_id or "-", step, ", ".join(names),
+        )
+    except Exception:
+        logger.warning("Failed to log tool calls", exc_info=True)
+
+
 def log_graph_event(event, session_id: Optional[str] = None, step: int = 0) -> None:
     """Write one narrative event as a single line. Never raises."""
     _ensure_configured()

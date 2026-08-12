@@ -4,6 +4,7 @@ Event extractor — converts LangGraph AIMessage tool_calls into NarrativeEvent 
 No regex. All extraction comes from structured tool_calls args.
 """
 
+import json
 from typing import List, Optional
 
 from biodsa.narrative.events import (
@@ -67,6 +68,25 @@ def _extract_text_arg(args: dict, keys: List[str]) -> Optional[str]:
     return None
 
 
+def _as_dict_list(value) -> List[dict]:
+    """Normalise a tool argument that should be a list of objects.
+
+    Models routinely pass such arguments as a JSON string, or as a single object
+    instead of a one-item list. Iterating a string yields characters, so without
+    this the entities would be dropped without a trace.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return []
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, dict)]
+    return []
+
+
 def extract_events(message, step_num: int = 0) -> List[NarrativeEvent]:
     """
     Convert a LangGraph AIMessage (with optional tool_calls) into narrative events.
@@ -107,8 +127,8 @@ def extract_events(message, step_num: int = 0) -> List[NarrativeEvent]:
 
         # ── add_to_graph ─────────────────────────────────────────
         elif name == "add_to_graph":
-            for ent in args.get("entities", []) or []:
-                if isinstance(ent, dict) and "name" in ent:
+            for ent in _as_dict_list(args.get("entities")):
+                if "name" in ent:
                     events.append(EntityConfirmed(
                         entity_name=ent["name"],
                         entity_type=_normalize_entity_type(
@@ -116,13 +136,18 @@ def extract_events(message, step_num: int = 0) -> List[NarrativeEvent]:
                         ),
                         observations=ent.get("observations", []) or [],
                     ))
-            for rel in args.get("relations", []) or []:
-                if isinstance(rel, dict):
-                    events.append(RelationFound(
-                        source_entity=rel.get("from_entity", ""),
-                        target_entity=rel.get("to_entity", ""),
-                        relation_type=rel.get("relation_type", ""),
-                    ))
+            for rel in _as_dict_list(args.get("relations")):
+                source = rel.get("from_entity", "")
+                target = rel.get("to_entity", "")
+                # An edge missing either end cannot be drawn; emitting it would
+                # only add a blank row to the graph stream.
+                if not source or not target:
+                    continue
+                events.append(RelationFound(
+                    source_entity=source,
+                    target_entity=target,
+                    relation_type=rel.get("relation_type", ""),
+                ))
 
         # ── phase change (BFS / DFS) ─────────────────────────────
         elif name == "go_breadth_first_search":
