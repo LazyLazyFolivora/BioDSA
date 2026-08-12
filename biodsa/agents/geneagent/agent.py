@@ -103,6 +103,7 @@ class GeneAgent(BaseAgent):
         evidence_graph_name: str = "evidence_graph",
         evidence_graph_cache_dir: str = None,
         session_id: Optional[str] = None,
+        llm_timeout: Optional[float] = None,
         **kwargs
     ):
         """
@@ -129,6 +130,11 @@ class GeneAgent(BaseAgent):
             evidence_graph_cache_dir: Graph store location (default: per-session)
             session_id: Session identifier, used to isolate the graph store and to
                                   tag lines in the graph event log
+            llm_timeout: Per-LLM-call timeout in seconds (default: None, leaving the
+                                  SDK default in place). Verification rounds grow the
+                                  message history, so later calls are the slow ones;
+                                  set this above the slowest call you expect rather
+                                  than at the average.
             **kwargs: Additional arguments passed to the base agent
         """
         # Initialize base agent (sandbox not needed for GeneAgent)
@@ -138,6 +144,7 @@ class GeneAgent(BaseAgent):
             api_key=api_key,
             endpoint=endpoint,
             container_id=container_id,
+            llm_timeout=llm_timeout,
         )
         
         self.max_verification_rounds = max_verification_rounds

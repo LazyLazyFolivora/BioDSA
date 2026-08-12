@@ -15,7 +15,7 @@ from langchain_openai import ChatOpenAI
 from langchain_openai import AzureChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph.message import BaseMessage
-from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, stop_after_delay, wait_random_exponential, retry_if_exception_type
 
 from biodsa.sandbox.sandbox_interface import ExecutionSandboxWrapper, UploadDataset
 from biodsa.agents.state import CodeExecutionResult
@@ -26,7 +26,27 @@ from biodsa.agents.llm_config import (
     ALL_SUPPORTED_MODELS,
 )
 
-def run_with_retry(func: Callable, max_retries: int = 5, min_wait: float = 1.0, max_wait: float = 30.0, timeout: Optional[float] = None, arg=None, **kwargs):
+RETRY_WATCHDOG_FACTOR = 2.0
+"""How much looser the thread-level watchdog is than the HTTP timeout.
+
+The watchdog must never be the timeout that normally fires: it cannot kill the
+thread it abandons, so the request would keep occupying the server while the
+retry issues a new one. See ``BaseAgent._retry_watchdog_timeout``.
+"""
+
+RETRY_BUDGET_FACTOR = 1.0
+"""Total retry budget for one LLM call, as a multiple of the HTTP timeout.
+
+At 1.0 a single attempt that runs to the timeout exhausts the budget and is not
+retried, which is the intent: a server that stalled once stalls again, and each
+further attempt costs another full timeout. Attempts that fail in seconds, such
+as a refused connection, barely touch the budget and still get every retry.
+
+The budget is only checked between attempts, so raising this multiplies the worst
+case by whole timeouts rather than extending it slightly.
+"""
+
+def run_with_retry(func: Callable, max_retries: int = 5, min_wait: float = 1.0, max_wait: float = 30.0, timeout: Optional[float] = None, max_total_time: Optional[float] = None, arg=None, **kwargs):
     """
     Execute a function with exponential backoff, jitter, and optional timeout using tenacity.
     
@@ -37,6 +57,15 @@ def run_with_retry(func: Callable, max_retries: int = 5, min_wait: float = 1.0, 
         max_wait: Maximum wait time between retries in seconds
         timeout: Maximum time in seconds to wait for a single function call (default: None for no timeout)
                  Note: Timed-out threads will be orphaned (not forcibly killed) to prevent hanging the main process.
+                 For network calls this makes the timeout unsuitable as the primary limit: the abandoned
+                 request keeps running server-side while the retry issues another one, so a server slower
+                 than `timeout` gets progressively more load instead of less. Enforce the real limit in the
+                 HTTP client and pass a looser value here as a watchdog only.
+        max_total_time: Budget in seconds for all attempts combined (default: None for no budget).
+                 Bounds the worst case, which `max_retries` alone cannot: with a slow per-call
+                 limit the retries multiply it, so five attempts at a 10-minute limit is nearly
+                 an hour. Attempts that fail fast (a refused connection) still get all of
+                 `max_retries`, while one that burns the whole budget is not retried.
         arg: Single positional argument to pass to the function (if needed)
         **kwargs: Keyword arguments to pass to the function
         
@@ -51,8 +80,12 @@ def run_with_retry(func: Callable, max_retries: int = 5, min_wait: float = 1.0, 
         in the background. This is a Python limitation - threads cannot be forcibly terminated.
         The executor is shut down without waiting to prevent the main process from hanging.
     """
+    stop_condition = stop_after_attempt(max_retries)
+    if max_total_time is not None:
+        stop_condition = stop_condition | stop_after_delay(max_total_time)
+
     @retry(
-        stop=stop_after_attempt(max_retries),
+        stop=stop_condition,
         wait=wait_random_exponential(multiplier=min_wait, max=max_wait),
         retry=retry_if_exception_type(Exception),
         reraise=True
@@ -190,7 +223,17 @@ class BaseAgent():
             # by all models
             if "max_completion_tokens" in kwargs:
                 del kwargs["max_completion_tokens"]
-        
+
+        # A timeout only means "stop consuming the server's resources" if the HTTP
+        # client enforces it, since that closes the connection. Every provider below
+        # exposes this as the `timeout` alias. An explicit None must be dropped
+        # rather than forwarded: the SDKs read it as "no timeout at all" and hang
+        # indefinitely, whereas omitting the key leaves their 600s default in place.
+        if kwargs.get("timeout") is None:
+            kwargs.pop("timeout", None)
+            if self.llm_timeout is not None:
+                kwargs["timeout"] = self.llm_timeout
+
         llm = None
         if (api == "anthropic"):
             llm = ChatAnthropic(
@@ -316,14 +359,56 @@ class BaseAgent():
         tool_count = len(tools)
         t0 = time.time()
         logging.info("LLM call start: model=%s messages=%d tools=%d", model_name, msg_count, tool_count)
+        watchdog = self._retry_watchdog_timeout()
+        budget = self._retry_budget()
         if tools:
             llm_with_tools = llm.bind_tools(tools, parallel_tool_calls=parallel_tool_calls)
-            response = run_with_retry(llm_with_tools.invoke, arg=messages, timeout=self.llm_timeout)
+            response = run_with_retry(
+                llm_with_tools.invoke, arg=messages, timeout=watchdog, max_total_time=budget
+            )
         else:
-            response = run_with_retry(llm.invoke, arg=messages, timeout=self.llm_timeout)
+            response = run_with_retry(
+                llm.invoke, arg=messages, timeout=watchdog, max_total_time=budget
+            )
         elapsed = time.time() - t0
         logging.info("LLM call done: %.1fs model=%s messages=%d", elapsed, model_name, msg_count)
         return response
+
+    def _retry_watchdog_timeout(self, base: Optional[float] = None) -> Optional[float]:
+        """
+        Thread-level timeout for :func:`run_with_retry`, as a safety net only.
+
+        ``_get_model`` hands the HTTP client the same limit, so a stalled call
+        normally aborts there and the connection is closed. This value is
+        deliberately looser so that path wins: ``run_with_retry`` cannot kill the
+        thread it times out, so if it fired first the abandoned request would keep
+        occupying the server while the retry issues a new one. It exists for the
+        case where the HTTP timeout does not fire at all, e.g. a client that
+        ignores the parameter.
+
+        Args:
+            base: The HTTP timeout this should guard. Defaults to ``llm_timeout``.
+        """
+        limit = base if base is not None else self.llm_timeout
+        if limit is None:
+            return None
+        return limit * RETRY_WATCHDOG_FACTOR
+
+    def _retry_budget(self, base: Optional[float] = None) -> Optional[float]:
+        """
+        Wall-clock budget for all retries of one LLM call.
+
+        Bounds the worst case so that raising ``llm_timeout`` does not multiply into
+        ``max_retries`` times that value, which would run past the MCP client's own
+        tool timeout and get the whole run cut off with nothing returned.
+
+        Args:
+            base: The HTTP timeout this should bound. Defaults to ``llm_timeout``.
+        """
+        limit = base if base is not None else self.llm_timeout
+        if limit is None:
+            return None
+        return limit * RETRY_BUDGET_FACTOR
 
     def _get_input_output_tokens(self, response: BaseMessage) -> Tuple[int, int]:
         """
@@ -529,6 +614,7 @@ class BaseAgent():
             model_name=compact_model,
             api_key=self.api_key,
             endpoint=self.endpoint,
+            timeout=call_timeout,
         )
         summary_prompt = [
             SystemMessage(content=(
@@ -544,7 +630,10 @@ class BaseAgent():
 
         try:
             summary_response = run_with_retry(
-                compact_llm.invoke, arg=summary_prompt, timeout=call_timeout,
+                compact_llm.invoke,
+                arg=summary_prompt,
+                timeout=self._retry_watchdog_timeout(call_timeout),
+                max_total_time=self._retry_budget(call_timeout),
             )
             summary_text = summary_response.content or ""
         except Exception as e:

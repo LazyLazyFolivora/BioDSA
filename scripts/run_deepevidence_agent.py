@@ -22,7 +22,7 @@ agent = DeepEvidenceAgent(
     main_search_rounds_budget=2, # the number of search rounds for the main orchestrator agent to run
     main_action_rounds_budget=15, # the number of action rounds for the main orchestrator agent to run
     light_mode=False, # a light mode agent that does not use the memory graph
-    llm_timeout=120,
+    llm_timeout=1200, # ceiling per LLM call; late rounds carry a long history and are the slow ones
 )
 
 # run the agent

@@ -424,7 +424,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--api-key", default=os.environ.get("BIODSA_LLM_API_KEY", "not-needed"))
     p.add_argument("--mcp-port", "-p", type=int, default=int(os.environ.get("BIODSA_MCP_PORT", "8765")))
     p.add_argument("--mcp-host", default="0.0.0.0")
-    p.add_argument("--llm-timeout", type=float, default=120.0)
+    p.add_argument("--llm-timeout", type=float, default=1200.0,
+                   help="Ceiling in seconds for a single LLM call, enforced by the HTTP "
+                        "client (default: 1200). Must clear the slowest legitimate call: "
+                        "a local model prefilling a long history can take minutes, and "
+                        "each timeout costs a retry. Retries are bounded by wall clock, "
+                        "so raising this does not multiply the worst case.")
     p.add_argument("--transport", default="sse", choices=["sse", "streamable-http"],
                    help="MCP transport protocol (default: sse). "
                         "streamable-http avoids the 60s SSE timeout in mcp-go clients.")

@@ -23,8 +23,18 @@ class MCPServerConfig:
     tool_timeout: float = 600.0
     """Default timeout in seconds for each MCP tool call (10 min)."""
 
-    llm_timeout: float = 120.0
-    """Per-LLM-call timeout in seconds (2 min)."""
+    llm_timeout: float = 1200.0
+    """Per-LLM-call timeout in seconds (20 min).
+
+    This is a ceiling, not an expectation: it bounds how long a single call may
+    stall, and a healthy call returns in seconds. It has to clear the slowest
+    legitimate call, because a local model prefilling a long tool-heavy history
+    can take minutes and every timeout here costs a retry. Late rounds are the
+    slow ones, so size this against those rather than the average.
+
+    Retries are bounded separately by wall clock (see ``RETRY_BUDGET_FACTOR``), so
+    raising this does not multiply into a worst case that outlives the caller.
+    """
 
     @property
     def endpoint(self) -> str:
