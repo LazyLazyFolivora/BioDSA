@@ -30,6 +30,45 @@ class Relation(BaseModel):
     to_entity: str
     relation_type: str
 
+def _as_object(value: Any) -> Optional[Dict[str, Any]]:
+    """Coerce a single tool argument into a plain dict, or None if impossible."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if isinstance(value, BaseModel):
+        return value.model_dump() if hasattr(value, "model_dump") else value.dict()
+    return value if isinstance(value, dict) else None
+
+
+def _as_object_list(value: Any) -> Optional[List[Dict[str, Any]]]:
+    """Coerce a tool argument that should be a list of objects.
+
+    Models routinely send these arguments as a JSON string, or as a bare object
+    instead of a one-item list. Iterating a JSON string yields its characters,
+    which is what produced "expected dict, got str. Entity: [" and silently cost
+    every write. Returns None when the value cannot be read as a list of objects.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if isinstance(value, (dict, BaseModel)):
+        single = _as_object(value)
+        return None if single is None else [single]
+    if not isinstance(value, list):
+        return None
+    items = []
+    for item in value:
+        obj = _as_object(item)
+        if obj is None:
+            return None
+        items.append(obj)
+    return items
+
+
 class AddToGraphInput(BaseModel):
     entities: Optional[List[Entity]] = Field(None, description="List of entities to create")
     relations: Optional[List[Relation]] = Field(None, description="List of relations to create between entities")
@@ -79,21 +118,21 @@ class AddToGraph(BaseTool):
             
             # Process entities
             if entities:
-                entities_dicts = []
-                for e in entities:
-                    if not isinstance(e, dict):
-                        return json.dumps({
-                            "success": False,
-                            "error": f"Invalid entity format: expected dict, got {type(e).__name__}. Entity: {e}"
-                        })
+                entities_dicts = _as_object_list(entities)
+                if entities_dicts is None:
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Invalid entity format: expected a list of objects, "
+                                 f"got {type(entities).__name__}: {str(entities)[:200]}"
+                    })
+                for e in entities_dicts:
                     # Validate required keys
                     if "name" not in e or "entity_type" not in e:
                         return json.dumps({
                             "success": False,
                             "error": f"Entity missing required fields 'name' or 'entity_type': {e}"
                         })
-                    entities_dicts.append(e)
-                
+
                 created = create_entities(entities_dicts, context=context, cache_dir=self.cache_dir)
                 results["entities_created"] = {
                     "count": len(created),
@@ -102,21 +141,21 @@ class AddToGraph(BaseTool):
             
             # Process relations
             if relations:
-                relations_dicts = []
-                for r in relations:
-                    if not isinstance(r, dict):
-                        return json.dumps({
-                            "success": False,
-                            "error": f"Invalid relation format: expected dict, got {type(r).__name__}. Relation: {r}"
-                        })
+                relations_dicts = _as_object_list(relations)
+                if relations_dicts is None:
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Invalid relation format: expected a list of objects, "
+                                 f"got {type(relations).__name__}: {str(relations)[:200]}"
+                    })
+                for r in relations_dicts:
                     # Validate required keys
                     if "from_entity" not in r or "to_entity" not in r or "relation_type" not in r:
                         return json.dumps({
                             "success": False,
                             "error": f"Relation missing required fields 'from_entity', 'to_entity', or 'relation_type': {r}"
                         })
-                    relations_dicts.append(r)
-                
+
                 created = create_relations(relations_dicts, context=context, cache_dir=self.cache_dir)
                 results["relations_created"] = {
                     "count": len(created),
@@ -125,21 +164,23 @@ class AddToGraph(BaseTool):
             
             # Process observations
             if observations:
-                if not isinstance(observations, dict):
+                observations_dict = _as_object(observations)
+                if observations_dict is None:
                     return json.dumps({
                         "success": False,
-                        "error": f"Invalid observations format: expected dict, got {type(observations).__name__}. Observations: {observations}"
+                        "error": f"Invalid observations format: expected an object, "
+                                 f"got {type(observations).__name__}: {str(observations)[:200]}"
                     })
                 # Validate required keys
-                if "name" not in observations or "observations" not in observations:
+                if "name" not in observations_dict or "observations" not in observations_dict:
                     return json.dumps({
                         "success": False,
-                        "error": f"Observations missing required fields 'name' or 'observations': {observations}"
+                        "error": f"Observations missing required fields 'name' or 'observations': {observations_dict}"
                     })
-                
+
                 obs_dict = {
-                    "entityName": observations["name"],
-                    "contents": observations["observations"]
+                    "entityName": observations_dict["name"],
+                    "contents": observations_dict["observations"]
                 }
                 added = add_observations([obs_dict], context=context, cache_dir=self.cache_dir)
                 results["observations_added"] = added
