@@ -26,6 +26,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set
 
+from .gene_symbols import canonical_gene_symbol
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +53,13 @@ MAX_DOMAINS_PER_GENE = 5
 MAX_PATHWAYS = 5
 MAX_ENRICHMENT_TERMS = 5
 MAX_PAPERS = 5
+
+# Co-occurrence floor for gene-disease edges. PubTator indexes any co-mention,
+# so every gene picks up a tail of diseases it shares a single abstract with:
+# PRKN and the common cold, LRRK2 and anodontia. Requiring a few independent
+# publications drops those while leaving the documented associations, which run
+# to hundreds of papers, untouched.
+MIN_DISEASE_COOCCURRENCE = 3
 
 # Upper ontology nodes carry no information: every gene is "associated with"
 # DOID:4 (disease). Dropping them by identifier is more reliable than by name,
@@ -221,6 +230,15 @@ def _clean(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
+def _symbol(value: Any) -> str:
+    """A gene name in its canonical spelling.
+
+    Applied where the name is read rather than only where the node is built, so
+    that the node and the edges naming it agree.
+    """
+    return canonical_gene_symbol(_clean(value))
+
+
 def _is_uninformative_disease(name: str, disease_id: str) -> bool:
     if disease_id and disease_id.strip() in _UNINFORMATIVE_DISEASE_IDS:
         return True
@@ -249,12 +267,14 @@ def _extract_disease(args: Dict[str, Any], result: Any, **_) -> ExtractedGraph:
     """
     graph = ExtractedGraph()
     for row in _by_count(_rows(_payload(result)), MAX_DISEASES_PER_GENE):
-        gene = _clean(row.get("gene_name"))
+        gene = _symbol(row.get("gene_name"))
         disease = _clean(row.get("disease_name"))
         disease_id = _clean(row.get("disease_id"))
         if not gene or not disease:
             continue
         if _is_uninformative_disease(disease, disease_id):
+            continue
+        if _count(row) < MIN_DISEASE_COOCCURRENCE:
             continue
         note = f"Co-occurs with {gene} in {_count(row)} indexed publications"
         if disease_id:
@@ -283,8 +303,8 @@ def _extract_interactions(args: Dict[str, Any], result: Any, **_) -> ExtractedGr
     """
     graph = ExtractedGraph()
     for row in _by_count(_rows(_payload(result)), MAX_INTERACTIONS):
-        left = _clean(row.get("gene1_name"))
-        right = _clean(row.get("gene2_name"))
+        left = _symbol(row.get("gene1_name"))
+        right = _symbol(row.get("gene2_name"))
         if not left or not right or left == right:
             continue
         source, target = sorted((left, right))
@@ -306,7 +326,7 @@ def _extract_complex(args: Dict[str, Any], result: Any, **_) -> ExtractedGraph:
     """
     graph = ExtractedGraph()
     for row in _by_count(_rows(_payload(result)), MAX_COMPLEXES):
-        gene = _clean(row.get("gene_name") or row.get("gene1_name"))
+        gene = _symbol(row.get("gene_name") or row.get("gene1_name"))
         complex_name = _clean(
             row.get("complex_name") or row.get("name") or row.get("complex")
         )
@@ -341,7 +361,7 @@ def _extract_domain(args: Dict[str, Any], result: Any, **_) -> ExtractedGraph:
     """
     graph = ExtractedGraph()
     for row in _by_count(_rows(_payload(result)), MAX_DOMAINS_PER_GENE):
-        gene = _clean(row.get("gene_name"))
+        gene = _symbol(row.get("gene_name"))
         domain = _clean(row.get("domain_name"))
         domain_id = _clean(row.get("domain_id"))
         if not gene or not domain:
@@ -377,7 +397,7 @@ def _extract_pathway(args: Dict[str, Any], result: Any, **_) -> ExtractedGraph:
             continue
         database = _clean(row.get("database"))
         raw_genes = row.get("overlapping genes") or row.get("overlapping_genes") or ""
-        genes = [_clean(g) for g in str(raw_genes).split(",") if _clean(g)]
+        genes = [_symbol(g) for g in str(raw_genes).split(",") if _clean(g)]
         note = f"Enriched in the query gene set ({len(genes)} overlapping genes)"
         graph.entities.append({
             "name": term,
@@ -448,7 +468,7 @@ def _extract_gene_summary(args: Dict[str, Any], result: Any, **_) -> ExtractedGr
     if not isinstance(record, dict):
         return graph
 
-    symbol = _clean(
+    symbol = _symbol(
         record.get("nomenclaturesymbol")
         or record.get("name")
         or args.get("gene_name")
@@ -501,10 +521,11 @@ def _extract_pubmed(
         return graph
 
     term = str(args.get("term") or "")
-    mentioned = {
-        symbol for symbol in _SYMBOL_IN_TEXT.findall(term.upper())
-        if symbol in known_genes
-    }
+    mentioned = set()
+    for raw in _SYMBOL_IN_TEXT.findall(term.upper()):
+        canonical = canonical_gene_symbol(raw)
+        if canonical in known_genes:
+            mentioned.add(canonical)
     if not mentioned:
         return graph
 

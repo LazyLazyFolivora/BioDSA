@@ -198,10 +198,14 @@ def test_unnamed_gene_set_is_skipped(observer, tmpdir):
     assert not entities
 
 
-def test_known_genes_are_normalized_to_upper_case(tmpdir):
+def test_known_genes_are_normalized(tmpdir):
+    """Case and spacing are levelled, and an alias collapses onto the symbol the
+    databases answer with, so PARKIN and prkn are one gene."""
     clear_manager_cache()
     observer = ToolGraphObserver(
-        context=CONTEXT, cache_dir=str(tmpdir), known_genes=["pink1", " prkn "]
+        context=CONTEXT,
+        cache_dir=str(tmpdir),
+        known_genes=["pink1", " prkn ", "PARKIN"],
     )
     assert observer.known_genes == {"PINK1", "PRKN"}
     clear_manager_cache()

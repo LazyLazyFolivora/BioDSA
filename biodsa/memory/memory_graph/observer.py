@@ -20,6 +20,7 @@ import logging
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from .gene_symbols import canonical_gene_symbol
 from .tool import add_observations, create_entities, create_relations, load_graph_data
 from .tool_graph_extractor import (
     ExtractedGraph,
@@ -57,9 +58,15 @@ class ToolGraphObserver:
         self.context = context
         self.cache_dir = cache_dir
         self.session_id = session_id
+        # Canonicalized the same way the extractors canonicalize database
+        # fields, so that a query written as PARKIN still matches the PRKN the
+        # databases return.
         self.known_genes: Set[str] = {
-            str(g).strip().upper() for g in (known_genes or ()) if str(g).strip()
+            canonical_gene_symbol(str(g).strip().upper())
+            for g in (known_genes or ())
+            if str(g).strip()
         }
+        self._known_upper: Set[str] = {g.upper() for g in self.known_genes}
 
         self.entities_written = 0
         self.relations_written = 0
@@ -87,7 +94,13 @@ class ToolGraphObserver:
             return graph
 
         if tool_name in _SET_LEVEL_TOOLS:
+            # Describes the query set as a whole, so it is in scope by
+            # construction and carries no edges to test.
             self._remember_set_level_terms(graph)
+        else:
+            graph = self._within_scope(graph)
+            if not graph:
+                return graph
 
         self.write(graph, source=tool_name)
         return graph
@@ -97,6 +110,50 @@ class ToolGraphObserver:
             name = entity.get("name")
             if name and name not in self._set_level_terms:
                 self._set_level_terms.append(name)
+
+    def _within_scope(self, graph: ExtractedGraph) -> ExtractedGraph:
+        """Drop what does not touch the genes under study.
+
+        An agent verifying a gene set also queries control genes, and a control
+        gene's pathways and diseases come back just as well-formed as the real
+        ones: nothing in a tool response says whether BRCA1 was a subject or a
+        comparison. The query set supplies that missing signal. An edge survives
+        when either endpoint belongs to the set, and a node when it is a member
+        or an endpoint of a surviving edge.
+
+        A run with no declared gene set is left alone, since then every node is
+        equally plausible.
+        """
+        if not self._known_upper:
+            return graph
+
+        relations = [
+            relation for relation in graph.relations
+            if self._is_known(relation.get("from_entity"))
+            or self._is_known(relation.get("to_entity"))
+        ]
+
+        keep: Set[str] = set()
+        for relation in relations:
+            for endpoint in (relation.get("from_entity"), relation.get("to_entity")):
+                if endpoint:
+                    keep.add(endpoint)
+        for entity in graph.entities:
+            name = entity.get("name")
+            if name and self._is_known(name):
+                keep.add(name)
+
+        return ExtractedGraph(
+            entities=[e for e in graph.entities if e.get("name") in keep],
+            relations=relations,
+            observations=[
+                o for o in graph.observations if o.get("entityName") in keep
+            ],
+        )
+
+    def _is_known(self, name: Any) -> bool:
+        text = str(name or "").strip().upper()
+        return bool(text) and text in self._known_upper
 
     # -- writing ----------------------------------------------------------
 

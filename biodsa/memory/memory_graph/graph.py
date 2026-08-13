@@ -18,7 +18,13 @@ except ImportError:
     HAS_VISUALIZATION = False
 
 from .bm25_index import BM25SearchIndex, HAS_BM25, HAS_TIKTOKEN
-from .schema import Entity, Relation, KnowledgeGraph, calculate_entities_hash
+from .schema import (
+    Entity,
+    Relation,
+    KnowledgeGraph,
+    calculate_entities_hash,
+    normalize_observations,
+)
 
 # File marker for safety
 FILE_MARKER = {"type": "_biodsa", "source": "mcp-knowledge-graph"}
@@ -465,7 +471,9 @@ class KnowledgeGraphManager:
         
         for obs in observations:
             entity_name = obs["entityName"]
-            contents = obs["contents"]
+            # Normalized before list()/extend() below, which would otherwise
+            # spread a single string into one observation per character.
+            contents = normalize_observations(obs.get("contents"))
             
             # Find the entity using fast cache lookup
             entity = self._get_entity_fast(entity_name, graph.entities)

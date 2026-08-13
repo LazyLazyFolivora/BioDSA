@@ -4,12 +4,42 @@ import json
 import hashlib
 
 
+def normalize_observations(value: object) -> List[str]:
+    """Coerce an observations field into a list of non-empty strings.
+
+    Entity is a dataclass, so its List[str] annotation carries no runtime check.
+    Models do send this field as a single string, and left alone that string
+    reaches the graph file verbatim, where everything that counts or iterates
+    observations then sees characters instead of observations.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, (list, tuple, set)):
+        candidates = list(value)
+    else:
+        candidates = [value]
+
+    texts: List[str] = []
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = (candidate if isinstance(candidate, str) else str(candidate)).strip()
+        if text:
+            texts.append(text)
+    return texts
+
+
 @dataclass
 class Entity:
     """Represents an entity in the knowledge graph."""
     name: str
     entity_type: str
     observations: List[str]
+
+    def __post_init__(self) -> None:
+        self.observations = normalize_observations(self.observations)
 
     def to_dict(self) -> Dict:
         return {

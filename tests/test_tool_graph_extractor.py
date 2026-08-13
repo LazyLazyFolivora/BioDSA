@@ -40,14 +40,18 @@ def _entity(graph, name):
 # Gene-disease associations (PubTator)
 # ---------------------------------------------------------------------------
 
+# Every row clears MIN_DISEASE_COOCCURRENCE, so that the rows below are dropped
+# by the filter each test names rather than by the co-occurrence floor. Upper
+# ontology terms really do co-occur often, so these counts are also the realistic
+# ones.
 DISEASE_RESPONSE = "Disease associations for PINK1:\n" + json.dumps([
     {"gene_name": "PINK1", "disease_id": "DOID:331",
-     "disease_name": "Central nervous system disease", "count": 1},
+     "disease_name": "Central nervous system disease", "count": 5},
     {"gene_name": "PINK1", "disease_id": "ICD10:G96",
-     "disease_name": "Cerebrospinal fluid leak  unspecified", "count": 1},
-    {"gene_name": "PINK1", "disease_id": "DOID:4", "disease_name": "Disease", "count": 1},
+     "disease_name": "Cerebrospinal fluid leak  unspecified", "count": 6},
+    {"gene_name": "PINK1", "disease_id": "DOID:4", "disease_name": "Disease", "count": 8},
     {"gene_name": "PINK1", "disease_id": "DOID:7",
-     "disease_name": "Disease of anatomical entity", "count": 1},
+     "disease_name": "Disease of anatomical entity", "count": 7},
     {"gene_name": "PINK1", "disease_id": "MESH:D010300",
      "disease_name": "Parkinson Disease", "count": 42},
 ])
@@ -92,8 +96,9 @@ def test_diseases_are_ordered_by_support():
     """The endpoint returns a long alphabetical tail; the cap has to keep the
     best-supported rows, not the alphabetically luckiest ones."""
     rows = [
+        # Just past the co-occurrence floor, so the cap is what excludes them.
         {"gene_name": "PINK1", "disease_id": f"DOID:{i}",
-         "disease_name": f"Aardvark disease {i}", "count": 1}
+         "disease_name": f"Aardvark disease {i}", "count": 3}
         for i in range(30)
     ]
     rows.append({"gene_name": "PINK1", "disease_id": "MESH:D010300",
@@ -361,7 +366,11 @@ def test_unsupported_tool_yields_empty_graph():
 
 
 def test_rows_missing_expected_fields_are_skipped():
-    payload = json.dumps([{"gene_name": "PINK1"}, {"disease_name": "Parkinson Disease"}])
+    # Well supported, so the missing field is the only reason to skip them.
+    payload = json.dumps([
+        {"gene_name": "PINK1", "count": 9},
+        {"disease_name": "Parkinson Disease", "count": 9},
+    ])
     assert not extract_from_tool_result("get_disease_for_single_gene", {}, payload)
 
 
