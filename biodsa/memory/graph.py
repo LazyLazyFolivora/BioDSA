@@ -5,7 +5,7 @@ This module provides two simple tools:
 1. AddToGraph - Add entities, relations, and observations to the memory graph
 2. RetrieveFromGraph - Search and retrieve information from the memory graph
 """
-from typing import Optional, List, Dict, Any, Tuple, Type
+from typing import Optional, List, Dict, Any, Set, Tuple, Type
 from langchain_core.tools import BaseTool, InjectedToolArg
 from pydantic import BaseModel, Field
 import json
@@ -243,8 +243,13 @@ class AddToGraph(BaseTool):
         self.database_name = database_name
         self.cache_dir = cache_dir
 
-    def _entity_types(self, context: str) -> Dict[str, str]:
-        """Name to type for what the graph already holds, for the pairing rules.
+    def _entity_types(self, context: str) -> Dict[str, Set[str]]:
+        """Name to every type held under it, for the pairing rules.
+
+        A name maps to a set because one name can be two nodes: Parkinson disease
+        is a DISEASE and, as KEGG hsa05012, a PATHWAY. Keeping only the last one
+        read would make MEMBER_OF_PATHWAY edges into it pass or fail on the order
+        entities happen to sit in the file.
 
         Best effort by design. A relation is allowed to name an entity that does
         not exist yet, and the store creates it, so an unreadable graph should
@@ -255,10 +260,11 @@ class AddToGraph(BaseTool):
         except Exception:
             return {}
 
-        types: Dict[str, str] = {}
+        types: Dict[str, Set[str]] = {}
         for entity in data.get("entities") or []:
             if isinstance(entity, dict) and entity.get("name"):
-                types[str(entity["name"])] = str(entity.get("entityType") or "")
+                name = str(entity["name"])
+                types.setdefault(name, set()).add(str(entity.get("entityType") or ""))
         return types
 
     def _run(
@@ -287,9 +293,10 @@ class AddToGraph(BaseTool):
             # key used to discard every good entry sent with it, and those were
             # lost for good whenever the model moved on instead of retrying.
             skipped: List[str] = []
-            # Types from this batch, which the pairing rules trust over the graph:
-            # a relation usually arrives alongside the entities it names.
-            batch_types: Dict[str, str] = {}
+            # Types from this batch, added to what the graph holds rather than
+            # replacing it: a relation usually arrives alongside the entities it
+            # names, and both are real.
+            batch_types: Dict[str, Set[str]] = {}
 
             # Process entities
             if entities:
@@ -299,9 +306,11 @@ class AddToGraph(BaseTool):
                 skipped.extend(problems)
                 usable, problems = screen_entities(usable)
                 skipped.extend(problems)
-                batch_types.update(
-                    {str(e["name"]): e["entity_type"] for e in usable if e.get("name")}
-                )
+                for entry in usable:
+                    if entry.get("name"):
+                        batch_types.setdefault(str(entry["name"]), set()).add(
+                            entry["entity_type"]
+                        )
                 if usable:
                     created = create_entities(usable, context=context, cache_dir=self.cache_dir)
                     results["entities_created"] = {
@@ -318,7 +327,8 @@ class AddToGraph(BaseTool):
                 )
                 skipped.extend(problems)
                 type_of = self._entity_types(context)
-                type_of.update(batch_types)
+                for name, kinds in batch_types.items():
+                    type_of.setdefault(name, set()).update(kinds)
                 usable, problems = screen_relations(usable, type_of)
                 skipped.extend(problems)
                 if usable:

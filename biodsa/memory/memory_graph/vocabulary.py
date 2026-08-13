@@ -19,7 +19,7 @@ No imports on purpose: this runs inside the add_to_graph tool, which already
 carries langchain and pydantic, and inside tests that must run without them.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 ENTITY_TYPES = frozenset({
     "GENE",
@@ -111,6 +111,26 @@ def _listed(names) -> str:
     return ", ".join(sorted(names))
 
 
+def _as_type_set(value: Any) -> FrozenSet[str]:
+    """The canonical types held under one name, from a string or a collection.
+
+    A name can carry more than one type at once: Parkinson disease is both the
+    DISEASE and the KEGG PATHWAY of that name, and both nodes exist. Types that
+    do not resolve, such as the auto_created placeholder the store assigns to an
+    entity invented by a relation, drop out and leave the name looking unknown,
+    which is what they are.
+    """
+    if value is None:
+        return frozenset()
+    candidates = [value] if isinstance(value, str) else list(value)
+    resolved = set()
+    for candidate in candidates:
+        kind = canonical_entity_type(candidate)
+        if kind:
+            resolved.add(kind)
+    return frozenset(resolved)
+
+
 def screen_entities(
     objects: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -148,14 +168,19 @@ def screen_relations(
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Split relations into those that can be written, and complaints.
 
-    type_of maps entity name to canonical type and may be partial: relations are
-    allowed to name entities that do not exist yet, which the store creates. The
-    two pairing rules apply only where both ends are known, so an unknown end
-    means the predicate is checked but the pairing is not.
+    type_of maps entity name to its type, or to several of them, and may be
+    partial: relations are allowed to name entities that do not exist yet, which
+    the store creates. The two pairing rules apply only where both ends are
+    known, so an unknown end means the predicate is checked but the pairing is
+    not.
+
+    Where a name holds more than one type, the pairing rules give way. Both of
+    them exist to refuse, and a refusal a model cannot act on is worse than an
+    edge that is merely suspect: told that Parkinson disease is a DISEASE, it has
+    no way to see that the pathway of the same name was the intended object.
     """
     known = {
-        str(name): canonical_entity_type(kind) or ""
-        for name, kind in (type_of or {}).items()
+        str(name): _as_type_set(kinds) for name, kinds in (type_of or {}).items()
     }
 
     usable: List[Dict[str, Any]] = []
@@ -176,15 +201,17 @@ def screen_relations(
             )
             continue
 
-        from_type = known.get(str(source), "")
-        to_type = known.get(str(target), "")
+        from_types = known.get(str(source), frozenset())
+        to_types = known.get(str(target), frozenset())
 
         # A drug does not inhibit or activate a disease, it treats it. The model
         # reaches for a mechanistic verb here when it has no target gene to point
         # at, which reads as a mechanism nobody measured.
         if (
-            from_type in _DRUG_TYPES
-            and to_type in _DISEASE_TYPES
+            from_types
+            and to_types
+            and from_types <= _DRUG_TYPES
+            and to_types <= _DISEASE_TYPES
             and resolved != "TREATS"
         ):
             problems.append(
@@ -193,10 +220,15 @@ def screen_relations(
             )
             continue
 
-        if resolved == "MEMBER_OF_PATHWAY" and to_type and to_type not in _PATHWAY_TYPES:
+        if (
+            resolved == "MEMBER_OF_PATHWAY"
+            and to_types
+            and not (to_types & _PATHWAY_TYPES)
+        ):
             problems.append(
                 "relation %d skipped, MEMBER_OF_PATHWAY needs a pathway as its object,"
-                " and %s is a %s (%s)" % (position, target, to_type, where)
+                " and %s is a %s (%s)"
+                % (position, target, _listed(to_types), where)
             )
             continue
 
