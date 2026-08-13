@@ -19,6 +19,7 @@ from biodsa.memory.memory_graph import (
     get_graph_text_overview, 
     load_graph_data,
 )
+from biodsa.memory.memory_graph.vocabulary import screen_entities, screen_relations
 
 class Entity(BaseModel):
     name: str
@@ -242,6 +243,24 @@ class AddToGraph(BaseTool):
         self.database_name = database_name
         self.cache_dir = cache_dir
 
+    def _entity_types(self, context: str) -> Dict[str, str]:
+        """Name to type for what the graph already holds, for the pairing rules.
+
+        Best effort by design. A relation is allowed to name an entity that does
+        not exist yet, and the store creates it, so an unreadable graph should
+        cost a check and not a write.
+        """
+        try:
+            data = load_graph_data(context, cache_dir=self.cache_dir) or {}
+        except Exception:
+            return {}
+
+        types: Dict[str, str] = {}
+        for entity in data.get("entities") or []:
+            if isinstance(entity, dict) and entity.get("name"):
+                types[str(entity["name"])] = str(entity.get("entityType") or "")
+        return types
+
     def _run(
         self, 
         entities: Optional[List[Entity]] = None,
@@ -268,6 +287,9 @@ class AddToGraph(BaseTool):
             # key used to discard every good entry sent with it, and those were
             # lost for good whenever the model moved on instead of retrying.
             skipped: List[str] = []
+            # Types from this batch, which the pairing rules trust over the graph:
+            # a relation usually arrives alongside the entities it names.
+            batch_types: Dict[str, str] = {}
 
             # Process entities
             if entities:
@@ -275,6 +297,11 @@ class AddToGraph(BaseTool):
                 skipped.extend(problems)
                 usable, problems = _require_fields(objects, ("name", "entity_type"), "entity")
                 skipped.extend(problems)
+                usable, problems = screen_entities(usable)
+                skipped.extend(problems)
+                batch_types.update(
+                    {str(e["name"]): e["entity_type"] for e in usable if e.get("name")}
+                )
                 if usable:
                     created = create_entities(usable, context=context, cache_dir=self.cache_dir)
                     results["entities_created"] = {
@@ -289,6 +316,10 @@ class AddToGraph(BaseTool):
                 usable, problems = _require_fields(
                     objects, ("from_entity", "to_entity", "relation_type"), "relation"
                 )
+                skipped.extend(problems)
+                type_of = self._entity_types(context)
+                type_of.update(batch_types)
+                usable, problems = screen_relations(usable, type_of)
                 skipped.extend(problems)
                 if usable:
                     created = create_relations(usable, context=context, cache_dir=self.cache_dir)

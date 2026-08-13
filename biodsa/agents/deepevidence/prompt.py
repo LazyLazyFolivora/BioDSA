@@ -154,13 +154,15 @@ Keep only concise, high-value facts directly relevant to the research question.
 Each item in the graph should represent a unique and reusable concept — not a paraphrase.
 
 ### Biomedical Entities
-- Type: GENE / PROTEIN (HGNC, NCBI Gene, UniProt, etc.)
-- Type: DISEASE / PHENOTYPE (DOID, MeSH, UMLS)
-- Type: CHEMICAL / DRUG (ChEBI, DrugBank, etc.)
-- Type: CELL LINE / TISSUE (Cellosaurus, etc.)
-- Type: PATHWAY / GENE_SET (Reactome, KEGG, GO, MSigDB, etc.)
-- Type: PAPER (PMID; short title optional)
-- Type: FINDING (only when they capture a concrete quantitative or mechanistic result)
+Use one of these strings verbatim as the type. Where two are offered, pick the
+one that fits and send it alone: `CHEMICAL/DRUG` is not a type.
+- GENE, or PROTEIN (HGNC, NCBI Gene, UniProt, etc.)
+- DISEASE, or PHENOTYPE (DOID, MeSH, UMLS)
+- CHEMICAL, or DRUG (ChEBI, DrugBank, etc.)
+- CELL_LINE, or TISSUE (Cellosaurus, etc.)
+- PATHWAY, or GENE_SET (Reactome, KEGG, GO, MSigDB, etc.)
+- PAPER (PMID; short title optional)
+- FINDING (only when they capture a concrete quantitative or mechanistic result)
 
 ### Relations
 - Mechanistic: ACTIVATES, INHIBITS, BINDS, PHOSPHORYLATES, REGULATES_EXPRESSION
