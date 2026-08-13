@@ -61,6 +61,14 @@ from biodsa.agents.geneagent.prompt import (
 from biodsa.agents.geneagent.tools import get_geneagent_tools
 from biodsa.memory.memory_graph import ToolGraphObserver, resolve_graph_cache_dir
 from biodsa.sandbox.execution import ExecutionResults
+from biodsa.utils.prompt_budget import truncate_middle_chars
+
+
+# A verification worker spends up to max_verification_rounds turns on a single
+# claim, and every tool response it has seen is resent on every later turn. Left
+# whole, a few PubMed abstracts or a few hundred interaction rows make the last
+# turns cost minutes each, which is where a run's wall clock actually goes.
+MAX_TOOL_RESULT_CHARS = 6000
 
 
 class GeneAgent(BaseAgent):
@@ -95,7 +103,7 @@ class GeneAgent(BaseAgent):
         api_key: str,
         endpoint: str,
         container_id: str = None,
-        max_verification_rounds: int = 20,
+        max_verification_rounds: int = 10,
         max_claims_per_stage: int = None,
         temperature: float = 1.0,
         include_verification_reports: bool = True,
@@ -115,7 +123,10 @@ class GeneAgent(BaseAgent):
             api_key: API key for the provider
             endpoint: API endpoint
             container_id: Optional Docker container ID (not used by GeneAgent)
-            max_verification_rounds: Maximum tool calls per claim verification (default: 20)
+            max_verification_rounds: Maximum tool calls per claim verification (default: 10).
+                                  Later rounds are the slow ones, because each carries every
+                                  earlier tool response. On reaching the limit the worker still
+                                  reports from the evidence it has.
             max_claims_per_stage: Maximum claims to verify per stage (default: None = all claims).
                                   Set to 1-3 for quick demos.
             temperature: LLM temperature for generation (default: 1.0)
@@ -422,10 +433,18 @@ class GeneAgent(BaseAgent):
                         if function_name in tool_dict:
                             tool = tool_dict[function_name]
                             function_response = tool._run(**function_params)
+                            # Observed before truncation, so a long response is
+                            # shortened for the prompt only and still reaches the
+                            # graph whole.
                             self._observe_for_graph(
                                 function_name, function_params, function_response
                             )
-                            function_response = f"Function has been called with params {function_params}, and returns {function_response}."
+                            function_response = "Function has been called with params {}, and returns {}.".format(
+                                function_params,
+                                truncate_middle_chars(
+                                    function_response, MAX_TOOL_RESULT_CHARS
+                                ),
+                            )
                         else:
                             function_response = f"Unknown function: {function_name}"
                         
@@ -457,6 +476,22 @@ class GeneAgent(BaseAgent):
                         HumanMessage(content=VERIFICATION_REPORT_REQUEST)
                     )
         
+        # Running out of rounds mid-investigation is normal for a broad claim,
+        # and the evidence gathered along the way is worth a conclusion. Ask for
+        # one from the model without tools bound, so it has to conclude from what
+        # it already has instead of opening another line of inquiry.
+        messages.append(HumanMessage(content=VERIFICATION_REPORT_REQUEST))
+        try:
+            response = run_with_retry(llm.invoke, arg=messages)
+            content = response.content if isinstance(response.content, str) else str(response.content)
+            if "Report:" in content:
+                content = content.split("Report:")[-1]
+            report = self._sanitize_text(content.strip())
+            if report:
+                return report
+        except Exception as e:
+            print(f"Final report request failed: {e}")
+
         return "Failed to verify claim within maximum rounds."
     
     # =========================================================================

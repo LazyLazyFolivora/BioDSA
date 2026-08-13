@@ -75,7 +75,7 @@ print(results.final_response)
 | `api_type` | str | required | API provider: "azure", "openai", "anthropic", "google" |
 | `api_key` | str | required | API key for the provider |
 | `endpoint` | str | required | API endpoint URL |
-| `max_verification_rounds` | int | 20 | Max tool calls per claim verification |
+| `max_verification_rounds` | int | 10 | Max tool calls per claim verification. Later rounds cost the most, since each resends every earlier tool response; on reaching the limit the worker still reports from the evidence it has. |
 | `max_claims_per_stage` | int | None | Max claims to verify per stage (None = all). Set to 1-3 for quick demos |
 | `temperature` | float | 1.0 | LLM temperature for generation |
 | `include_verification_reports` | bool | True | Include verification reports in output |
