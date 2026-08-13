@@ -6,6 +6,7 @@ for use in MCP servers, APIs, or other external interfaces.
 """
 
 import asyncio
+import threading
 from typing import List, Dict, Union, Optional, Any
 from .graph import KnowledgeGraphManager
 from .schema import Entity, Relation, KnowledgeGraph
@@ -39,28 +40,55 @@ def _run_async(coro):
 
 # Global cache for KnowledgeGraphManager instances (one per cache_dir)
 _manager_cache: Dict[str, KnowledgeGraphManager] = {}
+_write_locks: Dict[str, threading.Lock] = {}
+# Guards the two registries above, not the graph itself.
+_registry_lock = threading.Lock()
+
+
+def _cache_key(cache_dir: Optional[str]) -> str:
+    return cache_dir if cache_dir else "default"
+
 
 def _get_manager(cache_dir: Optional[str] = None) -> KnowledgeGraphManager:
     """
     Get or create a KnowledgeGraphManager instance for the given cache directory.
     Reuses existing instances to avoid recreating managers and reloading data.
     """
-    cache_key = cache_dir if cache_dir else "default"
-    if cache_key not in _manager_cache:
-        _manager_cache[cache_key] = KnowledgeGraphManager(cache_dir=cache_dir)
-    return _manager_cache[cache_key]
+    cache_key = _cache_key(cache_dir)
+    with _registry_lock:
+        manager = _manager_cache.get(cache_key)
+        if manager is None:
+            manager = _manager_cache[cache_key] = KnowledgeGraphManager(cache_dir=cache_dir)
+        return manager
+
+
+def _write_lock(cache_dir: Optional[str] = None) -> threading.Lock:
+    """Serialise writes to one graph directory.
+
+    A write is load, mutate, then overwrite the whole file, and the runs of one
+    conversation now share a directory. Two writing at once would keep only
+    whichever finished last, losing the other's entities with no error anywhere.
+    """
+    cache_key = _cache_key(cache_dir)
+    with _registry_lock:
+        lock = _write_locks.get(cache_key)
+        if lock is None:
+            lock = _write_locks[cache_key] = threading.Lock()
+        return lock
+
 
 def clear_manager_cache(cache_dir: Optional[str] = None):
     """
     Clear the cached manager instance for a specific cache directory or all managers.
     Useful after clearing a graph or when you want to reset the manager state.
     """
-    if cache_dir:
-        cache_key = cache_dir if cache_dir else "default"
-        if cache_key in _manager_cache:
-            del _manager_cache[cache_key]
-    else:
-        _manager_cache.clear()
+    with _registry_lock:
+        if cache_dir:
+            cache_key = _cache_key(cache_dir)
+            if cache_key in _manager_cache:
+                del _manager_cache[cache_key]
+        else:
+            _manager_cache.clear()
 
 def create_entities(
     entities: List[Dict[str, Any]], 
@@ -106,8 +134,9 @@ def create_entities(
         
         # Convert back to dictionaries
         return [entity.to_dict() for entity in created_entities]
-    
-    return _run_async(_async_create_entities())
+
+    with _write_lock(cache_dir):
+        return _run_async(_async_create_entities())
 
 
 def create_relations(
@@ -154,8 +183,9 @@ def create_relations(
         
         # Convert back to dictionaries
         return [relation.to_dict() for relation in created_relations]
-    
-    return _run_async(_async_create_relations())
+
+    with _write_lock(cache_dir):
+        return _run_async(_async_create_relations())
 
 
 def add_observations(
@@ -187,8 +217,9 @@ def add_observations(
     knowledge_graph_manager = _get_manager(cache_dir=cache_dir)
     async def _async_add_observations():
         return await knowledge_graph_manager.add_observations(observations, context)
-    
-    return _run_async(_async_add_observations())
+
+    with _write_lock(cache_dir):
+        return _run_async(_async_add_observations())
 
 
 def search_nodes(
@@ -334,9 +365,10 @@ def clear_graph(
     async def _async_clear_graph():
         return await knowledge_graph_manager.clear_graph(context)
     
-    result = _run_async(_async_clear_graph())
-    # Clear the cached manager after clearing the graph
-    clear_manager_cache(cache_dir)
+    with _write_lock(cache_dir):
+        result = _run_async(_async_clear_graph())
+        # Clear the cached manager after clearing the graph
+        clear_manager_cache(cache_dir)
     return result
 
 

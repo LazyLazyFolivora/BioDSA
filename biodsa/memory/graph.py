@@ -5,7 +5,7 @@ This module provides two simple tools:
 1. AddToGraph - Add entities, relations, and observations to the memory graph
 2. RetrieveFromGraph - Search and retrieve information from the memory graph
 """
-from typing import Optional, List, Dict, Any, Annotated, Type
+from typing import Optional, List, Dict, Any, Tuple, Type
 from langchain_core.tools import BaseTool, InjectedToolArg
 from pydantic import BaseModel, Field
 import json
@@ -42,31 +42,140 @@ def _as_object(value: Any) -> Optional[Dict[str, Any]]:
     return value if isinstance(value, dict) else None
 
 
-def _as_object_list(value: Any) -> Optional[List[Dict[str, Any]]]:
-    """Coerce a tool argument that should be a list of objects.
+def _brief(value: Any, limit: int = 120) -> str:
+    """Render a value short enough to sit inside an error message."""
+    text = value if isinstance(value, str) else str(value)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _end_of_object(text: str, start: int) -> int:
+    """Return the index just past the object beginning at *start*.
+
+    Lets a scan resume after an object that could not be decoded, instead of
+    re-reading it forever. Counts braces while respecting strings, so an
+    observation containing "{" does not end the object early.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return len(text)
+
+
+def _salvage_object_list(text: str) -> Tuple[List[Dict[str, Any]], int]:
+    """Decode the objects of a malformed JSON array one at a time.
+
+    Local models drop a key mid-array -- {"from_entity": "X", "relation_type":
+    "Y", "Parkinson disease"} -- which leaves the whole argument undecodable even
+    though the entries around it are well formed. Decoding per object keeps those
+    rather than losing the batch to one bad entry.
+
+    Returns the objects recovered and how many fragments stayed unreadable.
+    """
+    decoder = json.JSONDecoder()
+    objects: List[Dict[str, Any]] = []
+    broken = 0
+    index = 0
+    while index < len(text):
+        start = text.find("{", index)
+        if start < 0:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except ValueError:
+            broken += 1
+            index = _end_of_object(text, start)
+            continue
+        if isinstance(obj, dict):
+            objects.append(obj)
+        else:
+            broken += 1
+        index = end
+    return objects, broken
+
+
+def _as_object_list(value: Any) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Coerce a batch argument into objects, describing what could not be read.
 
     Models routinely send these arguments as a JSON string, or as a bare object
     instead of a one-item list. Iterating a JSON string yields its characters,
-    which is what produced "expected dict, got str. Entity: [" and silently cost
-    every write. Returns None when the value cannot be read as a list of objects.
+    which is what produced "expected dict, got str. Entity: [".
+
+    Unreadable input is reported in the second return value rather than failing
+    the batch. The readable entries are still worth writing, and the description
+    is what lets the model resend only the entry it got wrong.
     """
+    problems: List[str] = []
     if isinstance(value, str):
         try:
             value = json.loads(value)
         except ValueError:
-            return None
+            recovered, broken = _salvage_object_list(value)
+            if not recovered:
+                return [], ["could not be read as JSON: %s" % _brief(value)]
+            if broken:
+                problems.append(
+                    "%d malformed entr%s dropped while reading the batch; "
+                    "check for a missing key name" % (broken, "y" if broken == 1 else "ies")
+                )
+            return recovered, problems
     if isinstance(value, (dict, BaseModel)):
         single = _as_object(value)
-        return None if single is None else [single]
+        if single is None:
+            return [], ["could not be read as an object: %s" % _brief(value)]
+        return [single], problems
     if not isinstance(value, list):
-        return None
+        return [], [
+            "expected a list of objects, got %s: %s" % (type(value).__name__, _brief(value))
+        ]
     items = []
     for item in value:
         obj = _as_object(item)
         if obj is None:
-            return None
+            problems.append("not an object: %s" % _brief(item))
+            continue
         items.append(obj)
-    return items
+    return items, problems
+
+
+def _require_fields(
+    objects: List[Dict[str, Any]], required: Tuple[str, ...], kind: str
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Split objects into those carrying every required field, and complaints.
+
+    Positions are 1-based and counted over the batch as sent, so the model can
+    tell which entry to fix.
+    """
+    usable: List[Dict[str, Any]] = []
+    problems: List[str] = []
+    for position, obj in enumerate(objects, 1):
+        missing = [key for key in required if not obj.get(key)]
+        if missing:
+            problems.append(
+                "%s %d skipped, missing %s: %s"
+                % (kind, position, " and ".join(missing), _brief(obj))
+            )
+            continue
+        usable.append(obj)
+    return usable, problems
 
 
 def _as_int(value: Any, default: Optional[int]) -> Optional[int]:
@@ -155,90 +264,75 @@ class AddToGraph(BaseTool):
         try:
             context = self.database_name
             results = {}
-            
+            # A batch is filtered rather than rejected: one entry with a missing
+            # key used to discard every good entry sent with it, and those were
+            # lost for good whenever the model moved on instead of retrying.
+            skipped: List[str] = []
+
             # Process entities
             if entities:
-                entities_dicts = _as_object_list(entities)
-                if entities_dicts is None:
-                    return json.dumps({
-                        "success": False,
-                        "error": f"Invalid entity format: expected a list of objects, "
-                                 f"got {type(entities).__name__}: {str(entities)[:200]}"
-                    })
-                for e in entities_dicts:
-                    # Validate required keys
-                    if "name" not in e or "entity_type" not in e:
-                        return json.dumps({
-                            "success": False,
-                            "error": f"Entity missing required fields 'name' or 'entity_type': {e}"
-                        })
+                objects, problems = _as_object_list(entities)
+                skipped.extend(problems)
+                usable, problems = _require_fields(objects, ("name", "entity_type"), "entity")
+                skipped.extend(problems)
+                if usable:
+                    created = create_entities(usable, context=context, cache_dir=self.cache_dir)
+                    results["entities_created"] = {
+                        "count": len(created),
+                        "entities": created
+                    }
 
-                created = create_entities(entities_dicts, context=context, cache_dir=self.cache_dir)
-                results["entities_created"] = {
-                    "count": len(created),
-                    "entities": created
-                }
-            
             # Process relations
             if relations:
-                relations_dicts = _as_object_list(relations)
-                if relations_dicts is None:
-                    return json.dumps({
-                        "success": False,
-                        "error": f"Invalid relation format: expected a list of objects, "
-                                 f"got {type(relations).__name__}: {str(relations)[:200]}"
-                    })
-                for r in relations_dicts:
-                    # Validate required keys
-                    if "from_entity" not in r or "to_entity" not in r or "relation_type" not in r:
-                        return json.dumps({
-                            "success": False,
-                            "error": f"Relation missing required fields 'from_entity', 'to_entity', or 'relation_type': {r}"
-                        })
+                objects, problems = _as_object_list(relations)
+                skipped.extend(problems)
+                usable, problems = _require_fields(
+                    objects, ("from_entity", "to_entity", "relation_type"), "relation"
+                )
+                skipped.extend(problems)
+                if usable:
+                    created = create_relations(usable, context=context, cache_dir=self.cache_dir)
+                    results["relations_created"] = {
+                        "count": len(created),
+                        "relations": created
+                    }
 
-                created = create_relations(relations_dicts, context=context, cache_dir=self.cache_dir)
-                results["relations_created"] = {
-                    "count": len(created),
-                    "relations": created
-                }
-            
             # Process observations
             if observations:
                 # The schema asks for one entity, but models often batch several,
                 # and the underlying add_observations takes a list either way.
-                observations_list = _as_object_list(observations)
-                if observations_list is None:
+                objects, problems = _as_object_list(observations)
+                skipped.extend(problems)
+                usable, problems = _require_fields(objects, ("name", "observations"), "observation")
+                skipped.extend(problems)
+                if usable:
+                    obs_dicts = [
+                        {"entityName": obs["name"], "contents": obs["observations"]}
+                        for obs in usable
+                    ]
+                    results["observations_added"] = add_observations(
+                        obs_dicts, context=context, cache_dir=self.cache_dir
+                    )
+
+            if not results:
+                if skipped:
                     return json.dumps({
                         "success": False,
-                        "error": f"Invalid observations format: expected an object or a list "
-                                 f"of objects, got {type(observations).__name__}: "
-                                 f"{str(observations)[:200]}"
+                        "error": "Nothing could be written. Fix the entries listed under "
+                                 "'skipped' and send only those again.",
+                        "skipped": skipped,
                     })
-                obs_dicts = []
-                for obs in observations_list:
-                    # Validate required keys
-                    if "name" not in obs or "observations" not in obs:
-                        return json.dumps({
-                            "success": False,
-                            "error": f"Observations missing required fields 'name' or 'observations': {obs}"
-                        })
-                    obs_dicts.append({
-                        "entityName": obs["name"],
-                        "contents": obs["observations"]
-                    })
-
-                added = add_observations(obs_dicts, context=context, cache_dir=self.cache_dir)
-                results["observations_added"] = added
-            
-            if not results:
                 return json.dumps({
+                    "success": False,
                     "error": "No data provided. Please provide at least one of: entities, relations, or observations"
                 })
-            
-            return json.dumps({
-                "success": True,
-                "results": results
-            })
+
+            payload = {"success": True, "results": results}
+            if skipped:
+                # Reported next to the successful writes so the model resends just
+                # the entries it got wrong instead of repeating the whole batch.
+                payload["skipped"] = skipped
+            return json.dumps(payload)
                 
         except json.JSONDecodeError as e:
             return json.dumps({

@@ -33,9 +33,6 @@ def get_default_memory_graph_cache_dir() -> Path:
 def safe_dir_name(name: str) -> str:
     """Make a caller-supplied session id usable as a directory name.
 
-    Callers may pass composite ids such as "<message_id>:<tool_call_id>", and
-    ':' is not a legal path character on Windows.
-
     '.' is deliberately excluded from the allowed set: the session id reaches us
     from an MCP client and is partly LLM-generated, so a value of "." or ".."
     would otherwise escape the sessions directory and get wiped by callers that
@@ -44,23 +41,37 @@ def safe_dir_name(name: str) -> str:
     return "".join(c if c.isalnum() or c in "_-" else "_" for c in name) or "default"
 
 
+def graph_scope_id(session_id: str) -> str:
+    """Reduce a composite session id to the conversation that owns the graph.
+
+    MCP clients identify each tool call separately -- WeKnora sends
+    "<conversation_id>:<tool_call_id>" -- so keying the store on the whole id
+    started every call in a conversation from an empty graph and left a trail of
+    small disconnected graphs. The graph belongs to the conversation and
+    accumulates across its calls, while the full id still keeps one run's event
+    stream apart from another's.
+    """
+    scope = session_id.split(":", 1)[0].strip()
+    return scope or session_id
+
+
 def resolve_graph_cache_dir(
     cache_dir: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> Tuple[str, bool]:
     """Pick the graph store location for one run.
 
-    Returns (path, owns_path). `owns_path` is True only for a private directory
-    created here for this session, which is the one case where a caller may
-    safely delete it afterwards; a caller-supplied directory is never ours to
-    remove.
+    Returns (path, session_scoped). `session_scoped` is True for a directory
+    derived here from the session id. Such a directory is shared by every tool
+    call of one conversation, so a single run must not clear it: doing so throws
+    away what the earlier calls of the conversation found.
     """
     if cache_dir is not None:
         return str(cache_dir), False
     base = get_default_memory_graph_cache_dir()
     if not session_id:
         return str(base), False
-    path = os.path.join(str(base), "sessions", safe_dir_name(session_id))
+    path = os.path.join(str(base), "sessions", safe_dir_name(graph_scope_id(session_id)))
     os.makedirs(path, exist_ok=True)
     return path, True
 

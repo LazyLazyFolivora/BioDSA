@@ -165,6 +165,11 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
         go_kwargs = {"input_query": research_question}
         if knowledge_bases:
             go_kwargs["knowledge_bases"] = knowledge_bases
+        if session_id:
+            # Each tool call of a conversation arrives as its own session id but
+            # shares one graph directory, so clearing it here would discard what
+            # the earlier calls of the conversation established.
+            go_kwargs["clear_evidence_graph_cache"] = False
         logging.info("DeepEvidence: agent.go() starting (kbs=%s, session=%s)",
                      go_kwargs.get("knowledge_bases", "all"), session_id)
         loop = asyncio.get_running_loop()
@@ -233,10 +238,10 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
                 logging.warning("Failed to log stream summary", exc_info=True)
         # The per-session graph is kept: it is the only durable copy of the nodes
         # and relations, the client cannot ask for it again, and deleting it makes
-        # an empty graph indistinguishable from a failed write. go() clears the
-        # directory at the start of each run, so a session does not accumulate.
+        # an empty graph indistinguishable from a failed write. It accumulates
+        # across the tool calls of one conversation by design.
         try:
-            if agent is not None and agent.owns_evidence_graph_cache_dir:
+            if agent is not None and agent.session_scoped_graph_cache:
                 logging.info("DeepEvidence: session graph at %s",
                              agent.evidence_graph_cache_dir)
         except Exception:

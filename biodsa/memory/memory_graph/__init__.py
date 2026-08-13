@@ -14,6 +14,7 @@ from .tool import (
 
 from .graph import (
     get_default_memory_graph_cache_dir,
+    graph_scope_id,
     resolve_graph_cache_dir,
     safe_dir_name,
 )

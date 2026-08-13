@@ -156,7 +156,7 @@ class GeneAgent(BaseAgent):
         self.evidence_graph_name = evidence_graph_name
         (
             self.evidence_graph_cache_dir,
-            self.owns_evidence_graph_cache_dir,
+            self.session_scoped_graph_cache,
         ) = resolve_graph_cache_dir(evidence_graph_cache_dir, session_id)
         self._session_id = session_id
         # Created per run, once the gene set is known.

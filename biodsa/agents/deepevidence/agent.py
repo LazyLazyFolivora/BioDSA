@@ -157,12 +157,13 @@ class DeepEvidenceAgent(BaseAgent):
             self.small_model_api_key = small_model_api_key
             self.small_model_endpoint = small_model_endpoint
 
-        # go() wipes this directory on every run, so concurrent sessions sharing
-        # the global default would delete each other's graph. owns_* is True only
-        # for a directory created here, the one case where deleting it is safe.
+        # A session-scoped directory is shared by every tool call of one
+        # conversation and accumulates across them, so callers must leave
+        # clear_evidence_graph_cache off for it; wiping the global default would
+        # instead destroy a concurrent session's graph.
         (
             self.evidence_graph_cache_dir,
-            self.owns_evidence_graph_cache_dir,
+            self.session_scoped_graph_cache,
         ) = resolve_graph_cache_dir(evidence_graph_cache_dir, session_id)
         self.main_search_rounds_budget = main_search_rounds_budget
         self.main_action_rounds_budget = main_action_rounds_budget
@@ -964,7 +965,7 @@ class DeepEvidenceAgent(BaseAgent):
         relation trail should be available for every run, including ones that are
         not streaming to an MCP client.
         """
-        from biodsa.narrative.extractor import extract_events
+        from biodsa.narrative.extractor import extract_events, extract_result_events
         from biodsa.narrative.events import Progress, PhaseChange
         from biodsa.narrative.graph_log import (
             log_graph_event, log_tool_calls, log_tool_result,
@@ -973,7 +974,10 @@ class DeepEvidenceAgent(BaseAgent):
         log_tool_calls(message, session_id=self._session_id, step=step_num)
         log_tool_result(message, session_id=self._session_id, step=step_num)
         streaming = self.broadcaster is not None and bool(self._session_id)
-        for evt in extract_events(message, step_num):
+        # Searches come from the request, graph writes from the result: only the
+        # result knows which of the requested writes the store accepted.
+        events = extract_events(message, step_num) + extract_result_events(message, step_num)
+        for evt in events:
             log_graph_event(evt, session_id=self._session_id, step=step_num)
             if streaming:
                 self.broadcaster.emit_sync(self._session_id, evt)
@@ -1010,7 +1014,9 @@ class DeepEvidenceAgent(BaseAgent):
                            If None, all predefined knowledge bases are available.
                            Must be a subset of: {KNOWLEDGE_BASE_LIST}
             verbose: Whether to print the verbose output
-            clear_evidence_graph_cache: Whether to clear the evidence graph cache before running the agent
+            clear_evidence_graph_cache: Whether to clear the evidence graph cache before running the agent.
+                Leave this off when the agent was constructed with a session_id: that directory is shared
+                by every tool call of one conversation, so clearing it discards what the earlier calls found.
         Returns:
             DeepEvidenceExecutionResults: The execution results from the agent
         """

@@ -5,7 +5,7 @@ No regex. All extraction comes from structured tool_calls args.
 """
 
 import json
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from biodsa.narrative.events import (
     NarrativeEvent,
@@ -20,7 +20,7 @@ from biodsa.narrative.events import (
 # ── tool_name → (entity_type, arg_key, source_kb) ──────────────────────
 # For tools that target a specific named entity (gene name, drug name, etc.).
 
-ENTITY_SEARCH_TOOLS: dict[str, tuple[str, str, str]] = {
+ENTITY_SEARCH_TOOLS: Dict[str, Tuple[str, str, str]] = {
     # gene
     "unified_gene_search":      ("gene",    "search_term",  "gene"),
     "fetch_gene_details":       ("gene",    "gene_id",      "gene"),
@@ -46,7 +46,7 @@ ENTITY_SEARCH_TOOLS: dict[str, tuple[str, str, str]] = {
 
 # ── tools that search broadly (free text queries, not a named entity) ──
 
-LITERATURE_SEARCH_TOOLS: dict[str, str] = {
+LITERATURE_SEARCH_TOOLS: Dict[str, str] = {
     "search_papers":            "pubmed_papers",
     "find_entities":            "pubmed_papers",
     "find_related_entities":    "pubmed_papers",
@@ -125,29 +125,10 @@ def extract_events(message, step_num: int = 0) -> List[NarrativeEvent]:
                 source_kb=source_kb,
             ))
 
-        # ── add_to_graph ─────────────────────────────────────────
-        elif name == "add_to_graph":
-            for ent in _as_dict_list(args.get("entities")):
-                if "name" in ent:
-                    events.append(EntityConfirmed(
-                        entity_name=ent["name"],
-                        entity_type=_normalize_entity_type(
-                            ent.get("entity_type", "")
-                        ),
-                        observations=ent.get("observations", []) or [],
-                    ))
-            for rel in _as_dict_list(args.get("relations")):
-                source = rel.get("from_entity", "")
-                target = rel.get("to_entity", "")
-                # An edge missing either end cannot be drawn; emitting it would
-                # only add a blank row to the graph stream.
-                if not source or not target:
-                    continue
-                events.append(RelationFound(
-                    source_entity=source,
-                    target_entity=target,
-                    relation_type=rel.get("relation_type", ""),
-                ))
+        # add_to_graph is deliberately absent: its arguments say what the model
+        # intended to write, and the write can still be skipped or rejected after
+        # that. Those events come from the result instead, via
+        # extract_result_events.
 
         # ── phase change (BFS / DFS) ─────────────────────────────
         elif name == "go_breadth_first_search":
@@ -163,5 +144,81 @@ def extract_events(message, step_num: int = 0) -> List[NarrativeEvent]:
                 search_target=args.get("search_target", ""),
                 knowledge_bases=args.get("knowledge_bases", []) or [],
             ))
+
+    return events
+
+
+def _result_payload(message) -> dict:
+    """Read a tool result message as a JSON object, or {} if it is not one."""
+    content = getattr(message, "content", None)
+    if isinstance(content, dict):
+        return content
+    if not isinstance(content, str) or not content.strip():
+        return {}
+    try:
+        payload = json.loads(content)
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def extract_result_events(message, step_num: int = 0) -> List[NarrativeEvent]:
+    """Convert an add_to_graph result into events for what it actually wrote.
+
+    Reading the request instead reported entities and relations that never
+    reached the graph: a batch can be partly skipped, and the store drops
+    duplicates of what it already holds. The result carries only what was
+    accepted, so counts here match the graph the client ends up seeing.
+    """
+    if getattr(message, "name", None) != "add_to_graph":
+        return []
+
+    results = _result_payload(message).get("results")
+    if not isinstance(results, dict):
+        return []
+
+    events: list[NarrativeEvent] = []
+
+    created_entities = results.get("entities_created")
+    if isinstance(created_entities, dict):
+        for ent in _as_dict_list(created_entities.get("entities")):
+            name = ent.get("name")
+            if not name:
+                continue
+            events.append(EntityConfirmed(
+                entity_name=name,
+                # The store writes camelCase; the tool arguments were snake_case.
+                entity_type=_normalize_entity_type(
+                    ent.get("entityType") or ent.get("entity_type") or ""
+                ),
+                observations=ent.get("observations") or [],
+            ))
+
+    created_relations = results.get("relations_created")
+    if isinstance(created_relations, dict):
+        for rel in _as_dict_list(created_relations.get("relations")):
+            source = rel.get("from") or rel.get("from_entity") or ""
+            target = rel.get("to") or rel.get("to_entity") or ""
+            if not source or not target:
+                continue
+            events.append(RelationFound(
+                source_entity=source,
+                target_entity=target,
+                relation_type=rel.get("relationType") or rel.get("relation_type") or "",
+            ))
+
+    # Adding an observation to an unknown entity creates it, and that is the only
+    # place such a node is reported.
+    for obs in _as_dict_list(results.get("observations_added")):
+        if not obs.get("entity_created"):
+            continue
+        name = obs.get("entityName") or obs.get("name")
+        if not name:
+            continue
+        events.append(EntityConfirmed(
+            entity_name=name,
+            entity_type=_normalize_entity_type(""),
+            observations=obs.get("addedObservations") or [],
+        ))
 
     return events

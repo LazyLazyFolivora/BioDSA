@@ -12,7 +12,7 @@ from biodsa.narrative.events import (
     ENTITY_TYPE_NORMALIZE,
     _normalize_entity_type,
 )
-from biodsa.narrative.extractor import extract_events
+from biodsa.narrative.extractor import extract_events, extract_result_events
 from biodsa.narrative.broadcaster import EventBroadcaster
 
 __all__ = [
@@ -27,5 +27,6 @@ __all__ = [
     "ENTITY_TYPE_NORMALIZE",
     "_normalize_entity_type",
     "extract_events",
+    "extract_result_events",
     "EventBroadcaster",
 ]

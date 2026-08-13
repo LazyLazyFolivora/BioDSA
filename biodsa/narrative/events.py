@@ -8,9 +8,11 @@ suitable for real-time knowledge graph rendering.
 import uuid
 import time
 from dataclasses import dataclass, field, asdict
+from typing import Dict, List
 
-
-ENTITY_TYPE_NORMALIZE: dict[str, str] = {
+# typing generics rather than PEP 585: these annotations are evaluated at import
+# time, so dict[str, str] here makes the whole module unimportable below 3.9.
+ENTITY_TYPE_NORMALIZE: Dict[str, str] = {
     "GENE": "gene", "PROTEIN": "gene",
     "VARIANT": "variant",
     "DRUG": "drug", "CHEMICAL": "compound",
@@ -59,7 +61,7 @@ class EntityConfirmed(NarrativeEvent):
     """Agent confirmed an entity as important and wrote it to the evidence graph."""
     entity_name: str = ""
     entity_type: str = ""   # normalized
-    observations: list[str] = field(default_factory=list)
+    observations: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -75,7 +77,7 @@ class PhaseChange(NarrativeEvent):
     """Agent switched research phase (BFS → DFS or vice versa)."""
     phase: str = ""              # broad_search | deep_dive
     search_target: str = ""      # what the orchestrator asked the sub-agent to research
-    knowledge_bases: list[str] = field(default_factory=list)
+    knowledge_bases: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -91,8 +93,8 @@ class Progress(NarrativeEvent):
 @dataclass(frozen=True)
 class RunComplete(NarrativeEvent):
     """Agent finished. Carries the final graph snapshot for persistence."""
-    entities: list[dict] = field(default_factory=list)
-    relations: list[dict] = field(default_factory=list)
+    entities: List[dict] = field(default_factory=list)
+    relations: List[dict] = field(default_factory=list)
     total_steps: int = 0
     duration_seconds: float = 0.0
     final_response_preview: str = ""
