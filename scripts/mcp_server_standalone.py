@@ -91,7 +91,8 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
     from biodsa.narrative.graph_log import log_run_summary, log_stream_summary
     from biodsa.memory.memory_graph import load_graph_data
     from mcp.server.lowlevel.server import request_ctx
-    from mcp.types import Notification
+    from mcp.shared.message import ServerMessageMetadata, SessionMessage
+    from mcp.types import JSONRPCMessage, JSONRPCNotification
 
     agent = None
     consumer_task = None
@@ -130,19 +131,28 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
                     async for event in _broadcaster.subscribe_events(_sid):
                         seq += 1
                         event_type = type(event).__name__
-                        notification = Notification(
-                            method="notifications/biodsa/graph_event",
-                            params={
-                                "session_id": _sid,
-                                "seq": seq,
-                                "event": event.to_dict(),
-                            },
+                        # IMPORTANT: do NOT use mcp.types.Notification here.
+                        # Its params type only allows `_meta`; model_dump() strips
+                        # session_id/seq/event and WeKnora receives empty params
+                        # (dispatch drop: empty session_id keys=[]).
+                        session_message = SessionMessage(
+                            message=JSONRPCMessage(
+                                JSONRPCNotification(
+                                    jsonrpc="2.0",
+                                    method="notifications/biodsa/graph_event",
+                                    params={
+                                        "session_id": _sid,
+                                        "seq": seq,
+                                        "event": event.to_dict(),
+                                    },
+                                )
+                            ),
+                            metadata=ServerMessageMetadata(
+                                related_request_id=_req_id,
+                            ),
                         )
                         try:
-                            await mcp_session.send_notification(
-                                notification,
-                                related_request_id=_req_id,
-                            )
+                            await mcp_session._write_stream.send(session_message)
                             stream_stats["sent"] += 1
                             logging.debug("Graph notification sent: seq=%d type=%s session=%s",
                                           seq, event_type, _sid)
