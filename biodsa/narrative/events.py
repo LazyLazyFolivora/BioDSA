@@ -81,6 +81,14 @@ class PhaseChange(NarrativeEvent):
 
 
 @dataclass(frozen=True)
+class EntityPlanned(NarrativeEvent):
+    """Orchestrator declared an entity it intends to search, before confirmation."""
+    entity_name: str = ""   # canonical name/ID, e.g. "EGFR", "PMID:12345"
+    entity_type: str = ""   # normalized: gene|drug|disease|variant|target|compound|pathway|cell_line|tissue|finding|literature
+    search_target: str = "" # provenance: the parent search_target this plan came from
+
+
+@dataclass(frozen=True)
 class Progress(NarrativeEvent):
     """Periodic progress snapshot emitted every N steps."""
     step: int = 0

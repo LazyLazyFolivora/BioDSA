@@ -267,6 +267,11 @@ def log_graph_event(event, session_id: Optional[str] = None, step: int = 0) -> N
                 head, getattr(event, "phase", ""),
                 _truncate(getattr(event, "search_target", ""), 60),
             )
+        elif kind == "EntityPlanned":
+            line = "%s | PLANNED    | %-10s | %s" % (
+                head, getattr(event, "entity_type", ""),
+                _truncate(getattr(event, "entity_name", "")),
+            )
         else:
             # Progress and anything new: keep it out of the way, the interesting
             # numbers are already derivable from the lines above.

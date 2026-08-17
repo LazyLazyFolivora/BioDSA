@@ -1,6 +1,6 @@
 """Tools for the DeepEvidence agent.
 """
-from typing import List, Type
+from typing import List, Type, Optional, Dict
 from pydantic import BaseModel, Field, field_validator
 from langchain_core.tools import BaseTool
 
@@ -47,7 +47,17 @@ def create_bfs_tool(allowed_knowledge_bases: List[str], maximum_search_rounds: i
                 "Make sure the search target is restricted to searching entities exist in the given knowledge bases."
             )
         )
-        
+        seed_entities: Optional[List[Dict[str, str]]] = Field(
+            default=None,
+            description=(
+                "Structured list of the KEY ENTITIES you plan to search for, one entry per entity. "
+                'Each entry MUST be an object with exactly two keys: "name" (canonical name or ID, '
+                'e.g. "EGFR", "PMID:12345") and "entity_type" (one of: gene, drug, disease, variant, '
+                "target, compound, pathway, cell_line, tissue, finding, literature). "
+                "Omit this field if you have no specific entities planned yet."
+            ),
+        )
+
         @field_validator('knowledge_bases')
         @classmethod
         def validate_knowledge_bases(cls, v: List[str]) -> List[str]:
@@ -113,7 +123,17 @@ def create_dfs_tool(allowed_knowledge_bases: List[str], maximum_search_rounds: i
                 "Make sure the search target is restricted to searching entities exist in the given knowledge bases."
             )
         )
-        
+        seed_entities: Optional[List[Dict[str, str]]] = Field(
+            default=None,
+            description=(
+                "Structured list of the KEY ENTITIES you plan to search for, one entry per entity. "
+                'Each entry MUST be an object with exactly two keys: "name" (canonical name or ID, '
+                'e.g. "EGFR", "PMID:12345") and "entity_type" (one of: gene, drug, disease, variant, '
+                "target, compound, pathway, cell_line, tissue, finding, literature). "
+                "Omit this field if you have no specific entities planned yet."
+            ),
+        )
+
         @field_validator('knowledge_bases')
         @classmethod
         def validate_knowledge_bases(cls, v: List[str]) -> List[str]:

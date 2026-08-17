@@ -44,6 +44,11 @@ subagents instead of searching entity by entity yourself. Use your own search to
 only to confirm a specific fact. Your action budget is for orchestration, and the
 subagents also contribute to the shared evidence graph.
 
+When you delegate to `go_breadth_first_search` or `go_depth_first_search`, always fill
+`seed_entities` with the KEY ENTITIES you plan to search, each as a
+{"name": "<canonical name/ID>", "entity_type": "<gene|drug|disease|variant|target|compound|pathway|...>"}
+object. This is how the user sees your plan before anything is confirmed.
+
 After that, you have the below options:
 
 1) Interact with two subagents, `go_breadth_first_search` and `go_depth_first_search`, to do thorough research on the given knowledge bases.

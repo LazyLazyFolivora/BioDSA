@@ -12,6 +12,7 @@ from biodsa.narrative.events import (
     EntitySearching,
     LiteratureSearching,
     EntityConfirmed,
+    EntityPlanned,
     RelationFound,
     PhaseChange,
     _normalize_entity_type,
@@ -131,19 +132,25 @@ def extract_events(message, step_num: int = 0) -> List[NarrativeEvent]:
         # extract_result_events.
 
         # ── phase change (BFS / DFS) ─────────────────────────────
-        elif name == "go_breadth_first_search":
+        elif name in ("go_breadth_first_search", "go_depth_first_search"):
+            phase = "broad_search" if name == "go_breadth_first_search" else "deep_dive"
+            search_target = args.get("search_target", "")
             events.append(PhaseChange(
-                phase="broad_search",
-                search_target=args.get("search_target", ""),
+                phase=phase,
+                search_target=search_target,
                 knowledge_bases=args.get("knowledge_bases", []) or [],
             ))
-
-        elif name == "go_depth_first_search":
-            events.append(PhaseChange(
-                phase="deep_dive",
-                search_target=args.get("search_target", ""),
-                knowledge_bases=args.get("knowledge_bases", []) or [],
-            ))
+            for seed in _as_dict_list(args.get("seed_entities")):
+                seed_name = seed.get("name") or seed.get("entity_name") or ""
+                if not isinstance(seed_name, str) or not seed_name.strip():
+                    continue
+                events.append(EntityPlanned(
+                    entity_name=seed_name.strip(),
+                    entity_type=_normalize_entity_type(
+                        seed.get("entity_type") or seed.get("type") or ""
+                    ),
+                    search_target=search_target,
+                ))
 
     return events
 
