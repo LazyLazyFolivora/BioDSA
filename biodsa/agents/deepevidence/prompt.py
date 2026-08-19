@@ -46,7 +46,7 @@ subagents also contribute to the shared evidence graph.
 
 When you delegate to `go_breadth_first_search` or `go_depth_first_search`, always fill
 `seed_entities` with the KEY ENTITIES you plan to search, each as a
-{"name": "<canonical name/ID>", "entity_type": "<gene|drug|disease|variant|target|compound|pathway|...>", "confidence": <0..1>}
+{{"name": "<canonical name/ID>", "entity_type": "<gene|drug|disease|variant|target|compound|pathway|...>", "confidence": <0..1>}}
 object. Set confidence high (~0.9) for entities named directly in the user's question, and
 lower (~0.4-0.6) for entities you derive or infer by association. This is how the user sees
 your plan before anything is confirmed.
