@@ -57,18 +57,39 @@ class Entity:
         )
 
 
+def normalize_strength(value: object) -> float:
+    """Coerce a relation strength into a float clamped to [0, 1].
+
+    The dataclass annotation carries no runtime check, and models send this field
+    as a string, omit it, or emit None. A missing or unparsable value falls back
+    to a neutral 0.5 so the edge keeps its default thickness.
+    """
+    if value is None:
+        return 0.5
+    try:
+        strength = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    return min(1.0, max(0.0, strength))
+
+
 @dataclass
 class Relation:
     """Represents a relation between entities in the knowledge graph."""
     from_entity: str
     to_entity: str
     relation_type: str
+    strength: float = 0.5
+
+    def __post_init__(self) -> None:
+        self.strength = normalize_strength(self.strength)
 
     def to_dict(self) -> Dict:
         return {
             "from": self.from_entity,
             "to": self.to_entity,
-            "relationType": self.relation_type
+            "relationType": self.relation_type,
+            "strength": self.strength,
         }
 
     @classmethod
@@ -76,7 +97,8 @@ class Relation:
         return cls(
             from_entity=data["from"],
             to_entity=data["to"],
-            relation_type=data["relationType"]
+            relation_type=data["relationType"],
+            strength=data.get("strength", 0.5),
         )
 
 

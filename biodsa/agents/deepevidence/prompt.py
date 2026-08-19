@@ -46,8 +46,10 @@ subagents also contribute to the shared evidence graph.
 
 When you delegate to `go_breadth_first_search` or `go_depth_first_search`, always fill
 `seed_entities` with the KEY ENTITIES you plan to search, each as a
-{"name": "<canonical name/ID>", "entity_type": "<gene|drug|disease|variant|target|compound|pathway|...>"}
-object. This is how the user sees your plan before anything is confirmed.
+{"name": "<canonical name/ID>", "entity_type": "<gene|drug|disease|variant|target|compound|pathway|...>", "confidence": <0..1>}
+object. Set confidence high (~0.9) for entities named directly in the user's question, and
+lower (~0.4-0.6) for entities you derive or infer by association. This is how the user sees
+your plan before anything is confirmed.
 
 After that, you have the below options:
 
@@ -206,6 +208,10 @@ one that fits and send it alone: `CHEMICAL/DRUG` is not a type.
 - Limit contextual edges:
   - Max two per finding (e.g., one to MEASURE, one to CELLTYPE).
   - Do not connect every assay/species as a separate ASSOCIATED_WITH edge.
+- Score each relation's `strength` (0..1): ~0.9 for direct, well-supported
+  relations the source states explicitly, ~0.4-0.6 for associations or inferred
+  links. A thicker rendered edge means a stronger relation, so reserve high
+  strength for edges you are confident about.
 
 ## 4. Keep the Graph Dense, Not Big
 - Up to ~10 entities and ~16 relations per call; split a larger batch across calls.

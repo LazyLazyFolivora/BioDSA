@@ -70,6 +70,7 @@ class RelationFound(NarrativeEvent):
     source_entity: str = ""
     target_entity: str = ""
     relation_type: str = ""
+    strength: float = 0.5  # 0..1, LLM-scored: a thicker rendered edge = stronger relation
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ class EntityPlanned(NarrativeEvent):
     entity_name: str = ""   # canonical name/ID, e.g. "EGFR", "PMID:12345"
     entity_type: str = ""   # normalized: gene|drug|disease|variant|target|compound|pathway|cell_line|tissue|finding|literature
     search_target: str = "" # provenance: the parent search_target this plan came from
+    confidence: float = 0.5  # 0..1, LLM-scored: higher when the entity is named in the question
 
 
 @dataclass(frozen=True)

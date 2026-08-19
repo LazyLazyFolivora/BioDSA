@@ -30,6 +30,14 @@ class Relation(BaseModel):
     from_entity: str
     to_entity: str
     relation_type: str
+    strength: Optional[float] = Field(
+        None,
+        description=(
+            "0..1 strength of this relation. Higher means a stronger claim: ~0.9 "
+            "for direct, well-supported relations reported by the source, ~0.4-0.6 "
+            "for inferred or weak associations. Omit for a neutral default."
+        ),
+    )
 
 def _as_object(value: Any) -> Optional[Dict[str, Any]]:
     """Coerce a single tool argument into a plain dict, or None if impossible."""

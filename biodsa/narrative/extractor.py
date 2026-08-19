@@ -88,6 +88,20 @@ def _as_dict_list(value) -> List[dict]:
     return []
 
 
+def _parse_score(raw) -> float:
+    """Coerce an LLM-supplied score (entity confidence or relation strength) to
+    a float clamped to [0, 1].
+
+    Models sometimes emit the number as a string, or omit it entirely; a missing
+    value falls back to a neutral 0.5 rather than failing the extraction.
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.5
+    return min(1.0, max(0.0, value))
+
+
 def extract_events(message, step_num: int = 0) -> List[NarrativeEvent]:
     """
     Convert a LangGraph AIMessage (with optional tool_calls) into narrative events.
@@ -150,6 +164,7 @@ def extract_events(message, step_num: int = 0) -> List[NarrativeEvent]:
                         seed.get("entity_type") or seed.get("type") or ""
                     ),
                     search_target=search_target,
+                    confidence=_parse_score(seed.get("confidence")),
                 ))
 
     return events
@@ -212,6 +227,7 @@ def extract_result_events(message, step_num: int = 0) -> List[NarrativeEvent]:
                 source_entity=source,
                 target_entity=target,
                 relation_type=rel.get("relationType") or rel.get("relation_type") or "",
+                strength=_parse_score(rel.get("strength")),
             ))
 
     # Adding an observation to an unknown entity creates it, and that is the only

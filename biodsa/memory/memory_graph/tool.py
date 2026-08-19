@@ -171,7 +171,8 @@ def create_relations(
             Relation(
                 from_entity=r["from_entity"],
                 to_entity=r["to_entity"],
-                relation_type=r["relation_type"]
+                relation_type=r["relation_type"],
+                strength=r.get("strength", 0.5),
             )
             for r in relations
         ]

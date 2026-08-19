@@ -186,7 +186,11 @@ def _edge_fields(relation: dict) -> tuple:
     src = relation.get("from") or relation.get("from_entity") or ""
     dst = relation.get("to") or relation.get("to_entity") or ""
     rtype = relation.get("relationType") or relation.get("relation_type") or ""
-    return src, dst, rtype
+    try:
+        strength = float(relation.get("strength", 0.5))
+    except (TypeError, ValueError):
+        strength = 0.5
+    return src, dst, rtype, strength
 
 
 def log_graph_write(
@@ -218,10 +222,10 @@ def log_graph_write(
         for relation in relations or []:
             if not isinstance(relation, dict):
                 continue
-            src, dst, rtype = _edge_fields(relation)
+            src, dst, rtype, strength = _edge_fields(relation)
             _graph_logger.info(
-                "sid=%s | step=%3d | EDGE       | %s -[%s]-> %s",
-                sid, step, _truncate(src, 60), rtype, _truncate(dst, 60),
+                "sid=%s | step=%3d | EDGE       | %s -[%s]-> %s | str=%.2f",
+                sid, step, _truncate(src, 60), rtype, _truncate(dst, 60), strength,
             )
     except Exception:
         logger.warning("Failed to log graph write", exc_info=True)
@@ -251,11 +255,12 @@ def log_graph_event(event, session_id: Optional[str] = None, step: int = 0) -> N
                 len(observations),
             )
         elif kind == "RelationFound":
-            line = "%s | RELATION   | %s -[%s]-> %s" % (
+            line = "%s | RELATION   | %s -[%s]-> %s | str=%.2f" % (
                 head,
                 _truncate(getattr(event, "source_entity", ""), 60),
                 getattr(event, "relation_type", ""),
                 _truncate(getattr(event, "target_entity", ""), 60),
+                getattr(event, "strength", 0.5),
             )
         elif kind == "LiteratureSearching":
             line = "%s | LITERATURE | %-10s | %s" % (
@@ -268,9 +273,10 @@ def log_graph_event(event, session_id: Optional[str] = None, step: int = 0) -> N
                 _truncate(getattr(event, "search_target", ""), 60),
             )
         elif kind == "EntityPlanned":
-            line = "%s | PLANNED    | %-10s | %s" % (
+            line = "%s | PLANNED    | %-10s | %s | conf=%.2f" % (
                 head, getattr(event, "entity_type", ""),
                 _truncate(getattr(event, "entity_name", "")),
+                getattr(event, "confidence", 0.5),
             )
         else:
             # Progress and anything new: keep it out of the way, the interesting
@@ -311,10 +317,10 @@ def log_run_summary(
         for rel in relations:
             if not isinstance(rel, dict):
                 continue
-            src, dst, rtype = _edge_fields(rel)
+            src, dst, rtype, strength = _edge_fields(rel)
             _graph_logger.info(
-                "sid=%s |   EDGE     | %s -[%s]-> %s",
-                sid, _truncate(src, 60), rtype, _truncate(dst, 60),
+                "sid=%s |   EDGE     | %s -[%s]-> %s | str=%.2f",
+                sid, _truncate(src, 60), rtype, _truncate(dst, 60), strength,
             )
     except Exception:
         logger.warning("Failed to log run summary", exc_info=True)

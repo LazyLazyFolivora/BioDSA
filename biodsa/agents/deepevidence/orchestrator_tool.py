@@ -1,6 +1,6 @@
 """Tools for the DeepEvidence agent.
 """
-from typing import List, Type, Optional, Dict
+from typing import List, Type, Optional, Dict, Any
 from pydantic import BaseModel, Field, field_validator
 from langchain_core.tools import BaseTool
 
@@ -47,13 +47,16 @@ def create_bfs_tool(allowed_knowledge_bases: List[str], maximum_search_rounds: i
                 "Make sure the search target is restricted to searching entities exist in the given knowledge bases."
             )
         )
-        seed_entities: Optional[List[Dict[str, str]]] = Field(
+        seed_entities: Optional[List[Dict[str, Any]]] = Field(
             default=None,
             description=(
                 "Structured list of the KEY ENTITIES you plan to search for, one entry per entity. "
-                'Each entry MUST be an object with exactly two keys: "name" (canonical name or ID, '
-                'e.g. "EGFR", "PMID:12345") and "entity_type" (one of: gene, drug, disease, variant, '
-                "target, compound, pathway, cell_line, tissue, finding, literature). "
+                'Each entry MUST be an object with three keys: "name" (canonical name or ID, '
+                'e.g. "EGFR", "PMID:12345"), "entity_type" (one of: gene, drug, disease, variant, '
+                "target, compound, pathway, cell_line, tissue, finding, literature), and "
+                '"confidence" (a float 0..1 for how central this entity is to the user\'s question: '
+                "~0.9 for entities named directly in the question, ~0.4-0.6 for entities derived or "
+                "inferred by association). "
                 "Omit this field if you have no specific entities planned yet."
             ),
         )
@@ -123,13 +126,16 @@ def create_dfs_tool(allowed_knowledge_bases: List[str], maximum_search_rounds: i
                 "Make sure the search target is restricted to searching entities exist in the given knowledge bases."
             )
         )
-        seed_entities: Optional[List[Dict[str, str]]] = Field(
+        seed_entities: Optional[List[Dict[str, Any]]] = Field(
             default=None,
             description=(
                 "Structured list of the KEY ENTITIES you plan to search for, one entry per entity. "
-                'Each entry MUST be an object with exactly two keys: "name" (canonical name or ID, '
-                'e.g. "EGFR", "PMID:12345") and "entity_type" (one of: gene, drug, disease, variant, '
-                "target, compound, pathway, cell_line, tissue, finding, literature). "
+                'Each entry MUST be an object with three keys: "name" (canonical name or ID, '
+                'e.g. "EGFR", "PMID:12345"), "entity_type" (one of: gene, drug, disease, variant, '
+                "target, compound, pathway, cell_line, tissue, finding, literature), and "
+                '"confidence" (a float 0..1 for how central this entity is to the user\'s question: '
+                "~0.9 for entities named directly in the question, ~0.4-0.6 for entities derived or "
+                "inferred by association). "
                 "Omit this field if you have no specific entities planned yet."
             ),
         )
