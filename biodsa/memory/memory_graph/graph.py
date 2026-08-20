@@ -18,6 +18,7 @@ except ImportError:
     HAS_VISUALIZATION = False
 
 from .bm25_index import BM25SearchIndex, HAS_BM25, HAS_TIKTOKEN
+from .entity_names import entity_name_key
 from .schema import (
     Entity,
     Relation,
@@ -114,6 +115,7 @@ class KnowledgeGraphManager:
         
         # Cache for faster entity lookups
         self._entity_cache: Dict[str, Entity] = {}
+        self._entity_key_index: Dict[str, str] = {}
         self._cache_dirty = True
         # Cache for faster relation lookups
         self._relation_cache: Dict[Tuple[str, str, str], Relation] = {}
@@ -249,9 +251,10 @@ class KnowledgeGraphManager:
     async def _entity_exists_streaming(self, entity_name: str, context: Optional[str] = None) -> bool:
         """Check if entity exists by streaming through file (memory efficient)."""
         file_path = get_memory_file_path(self._cache_dir, context)
-        
+        key = entity_name_key(entity_name)
+
         async for entity in self._stream_entities_from_file(file_path):
-            if entity.name == entity_name:
+            if entity_name_key(entity.name) == key:
                 return True
         return False
 
@@ -317,6 +320,13 @@ class KnowledgeGraphManager:
     def _build_entity_cache(self, entities: List[Entity]) -> None:
         """Build entity cache for O(1) lookups."""
         self._entity_cache = {entity.name: entity for entity in entities}
+        # Spelling-variant index: key -> first stored name, so "Alzheimer
+        # diseases" resolves to the existing "Alzheimer disease" node.
+        self._entity_key_index = {}
+        for entity in entities:
+            key = entity_name_key(entity.name)
+            if key and key not in self._entity_key_index:
+                self._entity_key_index[key] = entity.name
         self._cache_dirty = False
 
     def _ensure_cache_built(self, entities: List[Entity]) -> None:
@@ -325,9 +335,10 @@ class KnowledgeGraphManager:
             self._build_entity_cache(entities)
 
     def _get_entity_fast(self, entity_name: str, entities: List[Entity]) -> Optional[Entity]:
-        """Get entity with O(1) lookup using cache."""
+        """Get entity with O(1) lookup, resolving spelling variants to the stored name."""
         self._ensure_cache_built(entities)
-        return self._entity_cache.get(entity_name)
+        canonical = self._entity_key_index.get(entity_name_key(entity_name), entity_name)
+        return self._entity_cache.get(canonical)
 
     def _build_relation_cache(self, relations: List[Relation]) -> None:
         """Build relation cache for O(1) lookups."""
@@ -357,9 +368,9 @@ class KnowledgeGraphManager:
         # For large batches, load full graph (amortized cost)
         graph = await self._load_graph(context)
         
-        # Use cache for O(1) entity existence checks
+        # Use cache for O(1) entity existence checks, on the spelling-variant key
         self._ensure_cache_built(graph.entities)
-        new_entities = [e for e in entities if e.name not in self._entity_cache]
+        new_entities = [e for e in entities if entity_name_key(e.name) not in self._entity_key_index]
         
         if new_entities:
             # Add new entities to graph
@@ -419,19 +430,34 @@ class KnowledgeGraphManager:
         that don't already exist in the graph.
         """
         graph = await self._load_graph(context)
-        
+
+        # Resolve spelling variants to a stored name, so a relation pointing at
+        # "Alzheimer diseases" lands on the existing "Alzheimer disease" node
+        # instead of auto-creating a duplicate endpoint.
+        self._ensure_cache_built(graph.entities)
+        name_by_key = self._entity_key_index
+        relations = [
+            Relation(
+                from_entity=name_by_key.get(entity_name_key(relation.from_entity), relation.from_entity),
+                to_entity=name_by_key.get(entity_name_key(relation.to_entity), relation.to_entity),
+                relation_type=relation.relation_type,
+                strength=relation.strength,
+            )
+            for relation in relations
+        ]
+
         # Get all existing entity names
         existing_entity_names = {entity.name for entity in graph.entities}
-        
+
         # Find all entity names referenced in the new relations
         referenced_entity_names = set()
         for relation in relations:
             referenced_entity_names.add(relation.from_entity)
             referenced_entity_names.add(relation.to_entity)
-        
+
         # Find entities that are referenced but don't exist
         missing_entity_names = referenced_entity_names - existing_entity_names
-        
+
         # Automatically create missing entities
         if missing_entity_names:
             new_entities = [
