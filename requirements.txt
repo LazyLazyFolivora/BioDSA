@@ -40,3 +40,4 @@ grandalf
 networkx
 pydantic
 fastmcp
+tavily-python

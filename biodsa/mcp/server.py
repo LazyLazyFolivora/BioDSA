@@ -37,13 +37,16 @@ def init_config(config: MCPServerConfig) -> None:
 # ---------------------------------------------------------------------------
 def _agent_kwargs() -> dict:
     """Common keyword arguments for instantiating any BioDSA agent."""
-    return dict(
+    kwargs = dict(
         model_name=_config.model_name,
         api_type="local",
         api_key=_config.api_key,
         endpoint=_config.endpoint,
         llm_timeout=_config.llm_timeout,
     )
+    if _config.disable_thinking:
+        kwargs["model_kwargs"] = {"thinking": {"type": "disabled"}}
+    return kwargs
 
 
 def _fmt_results(results, max_code_len: int = 800) -> str:
@@ -141,6 +144,8 @@ def biodsa_deepevidence_research(
         kwargs.setdefault("small_model_api_type", "local")
         kwargs.setdefault("small_model_api_key", _config.api_key)
         kwargs.setdefault("small_model_endpoint", _config.endpoint)
+        if _config.disable_thinking:
+            kwargs.setdefault("small_model_kwargs", {"thinking": {"type": "disabled"}})
         agent = DeepEvidenceAgent(**kwargs)
         go_kwargs = {"input_query": research_question}
         if knowledge_bases:

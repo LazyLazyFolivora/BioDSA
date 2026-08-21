@@ -45,6 +45,14 @@ class MCPServerConfig:
     providers work without a self-hosted vLLM box.
     """
 
+    disable_thinking: bool = False
+    """Disable thinking mode for models that enable it by default (DeepSeek V4).
+
+    When True, agents send ``thinking={"type": "disabled"}``, avoiding both the
+    extra reasoning tokens and the ``reasoning_content`` replay that thinking
+    mode otherwise requires on multi-turn tool-calling requests.
+    """
+
     @property
     def endpoint(self) -> str:
         """OpenAI-compatible base URL passed to LangChain's ChatOpenAI."""

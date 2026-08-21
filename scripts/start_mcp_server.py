@@ -70,6 +70,12 @@ def parse_args() -> argparse.Namespace:
              "for DeepSeek). Omit to use http://<llm-host>:<llm-port>/v1.",
     )
     p.add_argument(
+        "--disable-thinking",
+        action="store_true",
+        default=os.environ.get("BIODSA_DISABLE_THINKING", "").lower() in ("1", "true", "yes"),
+        help="Disable the model's thinking mode (DeepSeek V4 enables it by default).",
+    )
+    p.add_argument(
         "--mcp-port", "-p",
         type=int,
         default=int(os.environ.get("BIODSA_MCP_PORT", "8765")),
@@ -113,6 +119,7 @@ def main() -> None:
         model_name=args.model,
         api_key=args.api_key,
         api_base=args.api_base,
+        disable_thinking=args.disable_thinking,
         mcp_port=args.mcp_port,
         tool_timeout=args.tool_timeout,
         llm_timeout=args.llm_timeout,

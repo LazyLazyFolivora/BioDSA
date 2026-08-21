@@ -48,13 +48,16 @@ CONSUMER_DRAIN_TIMEOUT = 30.0
 
 
 def _agent_kwargs() -> dict:
-    return dict(
+    kwargs = dict(
         model_name=_config.model_name,
         api_type="local",
         api_key=_config.api_key,
         endpoint=_config.endpoint,
         llm_timeout=_config.llm_timeout,
     )
+    if _config.disable_thinking:
+        kwargs["model_kwargs"] = {"thinking": {"type": "disabled"}}
+    return kwargs
 
 
 def _fmt_results(results, max_code_len: int = 800) -> str:
@@ -111,6 +114,8 @@ async def tool_deepevidence_research(research_question: str, knowledge_bases: Op
         kwargs.setdefault("small_model_api_type", "local")
         kwargs.setdefault("small_model_api_key", _config.api_key)
         kwargs.setdefault("small_model_endpoint", _config.endpoint)
+        if _config.disable_thinking:
+            kwargs.setdefault("small_model_kwargs", {"thinking": {"type": "disabled"}})
         if session_id:
             # Resolve the request context *before* creating the run: without a
             # consumer there is nobody draining the queue, and the agent would
@@ -448,6 +453,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--api-base", default=os.environ.get("BIODSA_LLM_API_BASE"),
                    help="OpenAI-compatible base URL override (e.g. 'https://api.deepseek.com' "
                         "for DeepSeek). Omit to use http://<llm-host>:<llm-port>/v1.")
+    p.add_argument("--disable-thinking", action="store_true",
+                   default=os.environ.get("BIODSA_DISABLE_THINKING", "").lower() in ("1", "true", "yes"),
+                   help="Disable the model's thinking mode (DeepSeek V4 enables it by default).")
     p.add_argument("--mcp-port", "-p", type=int, default=int(os.environ.get("BIODSA_MCP_PORT", "8765")))
     p.add_argument("--mcp-host", default="0.0.0.0")
     p.add_argument("--llm-timeout", type=float, default=1200.0,
@@ -752,6 +760,7 @@ def main() -> None:
         model_name=args.model,
         api_key=args.api_key,
         api_base=args.api_base,
+        disable_thinking=args.disable_thinking,
         mcp_port=args.mcp_port,
         llm_timeout=args.llm_timeout,
     )

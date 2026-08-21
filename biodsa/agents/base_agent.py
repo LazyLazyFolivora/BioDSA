@@ -268,11 +268,22 @@ class BaseAgent():
                 **kwargs
             )
         elif (api == "local"):
-            # Local vLLM — strip cloud-provider-specific kwargs
+            # OpenAI-compatible endpoint (local vLLM or a cloud provider like
+            # DeepSeek). reasoning_effort / max_completion_tokens are OpenAI
+            # o1-era params that a plain chat-completions endpoint rejects.
             kwargs.pop("reasoning_effort", None)
-            kwargs.pop("thinking", None)
             kwargs.pop("max_completion_tokens", None)
             kwargs.setdefault("max_tokens", 4096)
+            # DeepSeek's V4 models enable thinking by default; it is disabled
+            # with thinking={"type": "disabled"}. ChatOpenAI has no `thinking`
+            # field, so route it through model_kwargs (forwarded to the request
+            # body). When it isn't set, local vLLM simply never sends it.
+            thinking = kwargs.pop("thinking", None)
+            if thinking is not None:
+                kwargs["model_kwargs"] = {
+                    **kwargs.get("model_kwargs", {}),
+                    "thinking": thinking,
+                }
             llm = ChatOpenAI(
                 model=model_name,
                 api_key=api_key or "not-needed",
