@@ -18,6 +18,64 @@ from biodsa.tools.kegg.client import KEGGClient
 from biodsa.tools.opentargets.disease_tools import search_diseases as opentargets_search_diseases, get_disease_details
 from biodsa.tools.chembl.drug_tools import search_drugs_by_indication, get_drug_indications
 
+
+# ================================================
+# Concurrent source-search helpers
+# ================================================
+
+def _run_concurrent(tasks):
+    """Run ``(source_name, callable, empty_default)`` tasks concurrently.
+
+    Each callable returns ``(data, summary)`` and may raise.  On success the
+    source contributes its data and summary; on error it contributes the
+    ``empty_default`` and an error string.  Results are returned in submission
+    order so downstream output stays deterministic.
+    """
+    if not tasks:
+        return []
+    order = [name for name, _, _ in tasks]
+    collected = {}
+    with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
+        futures = {executor.submit(fn): (name, empty) for name, fn, empty in tasks}
+        for future in as_completed(futures):
+            name, empty = futures[future]
+            try:
+                data, summary = future.result()
+                collected[name] = (data, summary, None)
+            except Exception as e:
+                logging.error(f"{name} search failed: {e}")
+                collected[name] = (empty, None, f"{name}: {str(e)}")
+    return [
+        (name, collected[name][0], collected[name][1], collected[name][2])
+        for name in order
+    ]
+
+
+def _search_biothings_disease(search_term: str, limit_per_source: int):
+    df, summary = biothings_search_diseases(search=search_term, limit=limit_per_source)
+    return df, f"**BioThings (MyDisease.info):** {summary}"
+
+
+def _search_kegg_disease(search_term: str, limit_per_source: int):
+    kegg_client = KEGGClient()
+    kegg_results = kegg_client.search_diseases(search_term, max_results=limit_per_source)
+    return kegg_results, f"**KEGG Disease:** Found {len(kegg_results)} diseases"
+
+
+def _search_opentargets_disease(search_term: str, limit_per_source: int):
+    df, summary = opentargets_search_diseases(query=search_term, size=limit_per_source)
+    return df, f"**Open Targets:** Found {len(df)} diseases"
+
+
+def _search_chembl_drugs_disease(search_term: str, limit_per_source: int):
+    df, summary = search_drugs_by_indication(
+        indication=search_term,
+        min_phase=0,
+        limit=limit_per_source,
+    )
+    return df, f"**ChEMBL Drugs:** Found {len(df)} drugs for this indication"
+
+
 # ================================================
 # Unified Search Function
 # ================================================
@@ -55,62 +113,26 @@ def search_diseases_unified(
     results = {}
     summaries = []
     errors = []
-    
-    # Search BioThings (MyDisease.info)
+
+    # Build the list of sources to search; each entry is
+    # (source_name, callable, empty_default) and runs concurrently below.
+    tasks = []
     if 'biothings' in sources:
-        try:
-            df, summary = biothings_search_diseases(
-                search=search_term,
-                limit=limit_per_source
-            )
-            results['biothings'] = df
-            summaries.append(f"**BioThings (MyDisease.info):** {summary}")
-        except Exception as e:
-            logging.error(f"BioThings search failed: {e}")
-            results['biothings'] = pd.DataFrame()
-            errors.append(f"BioThings: {str(e)}")
-    
-    # Search KEGG Disease Database
+        tasks.append(("biothings", lambda: _search_biothings_disease(search_term, limit_per_source), pd.DataFrame()))
     if 'kegg' in sources:
-        try:
-            kegg_client = KEGGClient()
-            kegg_results = kegg_client.search_diseases(search_term, max_results=limit_per_source)
-            results['kegg'] = kegg_results  # List of dicts
-            summaries.append(f"**KEGG Disease:** Found {len(kegg_results)} diseases")
-        except Exception as e:
-            logging.error(f"KEGG search failed: {e}")
-            results['kegg'] = []
-            errors.append(f"KEGG: {str(e)}")
-    
-    # Search Open Targets
+        tasks.append(("kegg", lambda: _search_kegg_disease(search_term, limit_per_source), []))
     if 'opentargets' in sources:
-        try:
-            df, summary = opentargets_search_diseases(
-                query=search_term,
-                size=limit_per_source
-            )
-            results['opentargets'] = df
-            summaries.append(f"**Open Targets:** Found {len(df)} diseases")
-        except Exception as e:
-            logging.error(f"Open Targets search failed: {e}")
-            results['opentargets'] = pd.DataFrame()
-            errors.append(f"Open Targets: {str(e)}")
-    
-    # Search ChEMBL for drugs treating this disease/indication
+        tasks.append(("opentargets", lambda: _search_opentargets_disease(search_term, limit_per_source), pd.DataFrame()))
     if 'chembl_drugs' in sources:
-        try:
-            df, summary = search_drugs_by_indication(
-                indication=search_term,
-                min_phase=0,  # Include all phases
-                limit=limit_per_source
-            )
-            results['chembl_drugs'] = df
-            summaries.append(f"**ChEMBL Drugs:** Found {len(df)} drugs for this indication")
-        except Exception as e:
-            logging.error(f"ChEMBL drugs search failed: {e}")
-            results['chembl_drugs'] = pd.DataFrame()
-            errors.append(f"ChEMBL Drugs: {str(e)}")
-    
+        tasks.append(("chembl_drugs", lambda: _search_chembl_drugs_disease(search_term, limit_per_source), pd.DataFrame()))
+
+    for source_name, data, summary, error in _run_concurrent(tasks):
+        results[source_name] = data
+        if summary is not None:
+            summaries.append(summary)
+        if error is not None:
+            errors.append(error)
+
     # Build formatted output string
     output = "# Unified Disease Search Results\n\n"
     output += f"## Search Term: '{search_term}'\n\n"

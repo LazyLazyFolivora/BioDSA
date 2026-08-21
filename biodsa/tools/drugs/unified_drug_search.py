@@ -22,6 +22,93 @@ from biodsa.tools.opentargets.drug_tools import search_drugs as opentargets_sear
 from biodsa.tools.chembl.compound_tools import search_compounds as chembl_search_compounds
 from biodsa.tools.chembl.drug_tools import get_drug_clinical_data as chembl_get_drug_clinical_data
 
+
+# ================================================
+# Concurrent source-search helpers
+# ================================================
+
+def _run_concurrent(tasks):
+    """Run ``(source_name, callable, empty_default)`` tasks concurrently.
+
+    Each callable returns ``(data, summary)`` and may raise.  On success the
+    source contributes its data and summary; on error it contributes the
+    ``empty_default`` and an error string.  Results are returned in submission
+    order so downstream output stays deterministic.
+    """
+    if not tasks:
+        return []
+    order = [name for name, _, _ in tasks]
+    collected = {}
+    with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
+        futures = {executor.submit(fn): (name, empty) for name, fn, empty in tasks}
+        for future in as_completed(futures):
+            name, empty = futures[future]
+            try:
+                data, summary = future.result()
+                collected[name] = (data, summary, None)
+            except Exception as e:
+                logging.error(f"{name} search failed: {e}")
+                collected[name] = (empty, None, f"{name}: {str(e)}")
+    return [
+        (name, collected[name][0], collected[name][1], collected[name][2])
+        for name in order
+    ]
+
+
+def _search_biothings_drug(search_term: str, limit_per_source: int):
+    df, summary = biothings_search_drugs(search=search_term, limit=limit_per_source)
+    return df, f"**BioThings (MyChem.info):** {summary}"
+
+
+def _search_openfda_approval(search_term: str, limit_per_source: int):
+    strategies = [
+        lambda: search_openfda_drugs(search_term=search_term, limit=limit_per_source),
+        lambda: search_openfda_drugs(brand_name=search_term, limit=limit_per_source),
+        lambda: search_openfda_drugs(substance_name=search_term.upper(), limit=limit_per_source),
+    ]
+    with ThreadPoolExecutor(max_workers=len(strategies)) as executor:
+        futures = [executor.submit(strategy) for strategy in strategies]
+        frames = [future.result()[0] for future in as_completed(futures)]
+    df = pd.concat(frames, ignore_index=True)
+    if not df.empty:
+        df = df.drop_duplicates(subset=['application_number'], keep='first')
+        df = df.head(limit_per_source)
+    return df, f"**OpenFDA Approval:** Found {len(df)} drug products"
+
+
+def _search_openfda_label(search_term: str, limit_per_source: int):
+    strategies = [
+        lambda: search_drug_labels(brand_name=search_term, limit=limit_per_source),
+        lambda: search_drug_labels(generic_name=search_term, limit=limit_per_source),
+        lambda: search_drug_labels(substance_name=search_term.upper(), limit=limit_per_source),
+        lambda: search_drug_labels(indications_and_usage=search_term, limit=limit_per_source),
+    ]
+    with ThreadPoolExecutor(max_workers=len(strategies)) as executor:
+        futures = [executor.submit(strategy) for strategy in strategies]
+        frames = [future.result()[0] for future in as_completed(futures)]
+    df = pd.concat(frames, ignore_index=True)
+    if not df.empty:
+        df = df.drop_duplicates(subset=['set_id'], keep='first')
+        df = df.head(limit_per_source)
+    return df, f"**OpenFDA Labels:** Found {len(df)} drug labels"
+
+
+def _search_kegg_drug(search_term: str, limit_per_source: int):
+    kegg_client = KEGGClient()
+    kegg_results = kegg_client.search_drugs(search_term, max_results=limit_per_source)
+    return kegg_results, f"**KEGG Drug:** Found {len(kegg_results)} drugs"
+
+
+def _search_opentargets_drug(search_term: str, limit_per_source: int):
+    df, summary = opentargets_search_drugs(query=search_term, size=limit_per_source)
+    return df, f"**Open Targets:** Found {len(df)} drugs"
+
+
+def _search_chembl_drug(search_term: str, limit_per_source: int):
+    df, summary = chembl_search_compounds(query=search_term, limit=limit_per_source)
+    return df, f"**ChEMBL:** Found {len(df)} compounds"
+
+
 # ================================================
 # Unified Search Function
 # ================================================
@@ -59,141 +146,30 @@ def search_drugs_unified(
     results = {}
     summaries = []
     errors = []
-    
-    # Search BioThings (MyChem.info)
+
+    # Build the list of sources to search; each entry is
+    # (source_name, callable, empty_default) and runs concurrently below.
+    tasks = []
     if 'biothings' in sources:
-        try:
-            df, summary = biothings_search_drugs(
-                search=search_term,
-                limit=limit_per_source
-            )
-            results['biothings'] = df
-            summaries.append(f"**BioThings (MyChem.info):** {summary}")
-        except Exception as e:
-            logging.error(f"BioThings search failed: {e}")
-            results['biothings'] = pd.DataFrame()
-            errors.append(f"BioThings: {str(e)}")
-    
-    # Search OpenFDA Drugs@FDA (Approval Data)
+        tasks.append(("biothings", lambda: _search_biothings_drug(search_term, limit_per_source), pd.DataFrame()))
     if 'openfda_approval' in sources:
-        try:
-            # Try multiple search strategies
-            df = pd.DataFrame()
-            
-            # Strategy 1: Search by all fields
-            df1, _ = search_openfda_drugs(
-                search_term=search_term,
-                limit=limit_per_source
-            )
-            
-            # Strategy 2: Search by brand name
-            df2, _ = search_openfda_drugs(
-                brand_name=search_term,
-                limit=limit_per_source
-            )
-            
-            # Strategy 3: Search by substance
-            df3, _ = search_openfda_drugs(
-                substance_name=search_term.upper(),
-                limit=limit_per_source
-            )
-            
-            # Combine and deduplicate
-            df = pd.concat([df1, df2, df3], ignore_index=True)
-            if not df.empty:
-                df = df.drop_duplicates(subset=['application_number'], keep='first')
-                df = df.head(limit_per_source)
-            
-            results['openfda_approval'] = df
-            summaries.append(f"**OpenFDA Approval:** Found {len(df)} drug products")
-        except Exception as e:
-            logging.error(f"OpenFDA approval search failed: {e}")
-            results['openfda_approval'] = pd.DataFrame()
-            errors.append(f"OpenFDA Approval: {str(e)}")
-    
-    # Search OpenFDA Drug Labels
+        tasks.append(("openfda_approval", lambda: _search_openfda_approval(search_term, limit_per_source), pd.DataFrame()))
     if 'openfda_label' in sources:
-        try:
-            # Try multiple search strategies
-            df = pd.DataFrame()
-            
-            # Strategy 1: Search by brand name
-            df1, _ = search_drug_labels(
-                brand_name=search_term,
-                limit=limit_per_source
-            )
-            
-            # Strategy 2: Search by generic name
-            df2, _ = search_drug_labels(
-                generic_name=search_term,
-                limit=limit_per_source
-            )
-            
-            # Strategy 3: Search by substance
-            df3, _ = search_drug_labels(
-                substance_name=search_term.upper(),
-                limit=limit_per_source
-            )
-            
-            # Strategy 4: Search in indications
-            df4, _ = search_drug_labels(
-                indications_and_usage=search_term,
-                limit=limit_per_source
-            )
-            
-            # Combine and deduplicate by set_id
-            df = pd.concat([df1, df2, df3, df4], ignore_index=True)
-            if not df.empty:
-                df = df.drop_duplicates(subset=['set_id'], keep='first')
-                df = df.head(limit_per_source)
-            
-            results['openfda_label'] = df
-            summaries.append(f"**OpenFDA Labels:** Found {len(df)} drug labels")
-        except Exception as e:
-            logging.error(f"OpenFDA label search failed: {e}")
-            results['openfda_label'] = pd.DataFrame()
-            errors.append(f"OpenFDA Labels: {str(e)}")
-    
-    # Search KEGG Drug Database
+        tasks.append(("openfda_label", lambda: _search_openfda_label(search_term, limit_per_source), pd.DataFrame()))
     if 'kegg' in sources:
-        try:
-            kegg_client = KEGGClient()
-            kegg_results = kegg_client.search_drugs(search_term, max_results=limit_per_source)
-            results['kegg'] = kegg_results  # List of dicts
-            summaries.append(f"**KEGG Drug:** Found {len(kegg_results)} drugs")
-        except Exception as e:
-            logging.error(f"KEGG search failed: {e}")
-            results['kegg'] = []
-            errors.append(f"KEGG: {str(e)}")
-    
-    # Search Open Targets
+        tasks.append(("kegg", lambda: _search_kegg_drug(search_term, limit_per_source), []))
     if 'opentargets' in sources:
-        try:
-            df, summary = opentargets_search_drugs(
-                query=search_term,
-                size=limit_per_source
-            )
-            results['opentargets'] = df
-            summaries.append(f"**Open Targets:** Found {len(df)} drugs")
-        except Exception as e:
-            logging.error(f"Open Targets search failed: {e}")
-            results['opentargets'] = pd.DataFrame()
-            errors.append(f"Open Targets: {str(e)}")
-    
-    # Search ChEMBL
+        tasks.append(("opentargets", lambda: _search_opentargets_drug(search_term, limit_per_source), pd.DataFrame()))
     if 'chembl' in sources:
-        try:
-            df, summary = chembl_search_compounds(
-                query=search_term,
-                limit=limit_per_source
-            )
-            results['chembl'] = df
-            summaries.append(f"**ChEMBL:** Found {len(df)} compounds")
-        except Exception as e:
-            logging.error(f"ChEMBL search failed: {e}")
-            results['chembl'] = pd.DataFrame()
-            errors.append(f"ChEMBL: {str(e)}")
-    
+        tasks.append(("chembl", lambda: _search_chembl_drug(search_term, limit_per_source), pd.DataFrame()))
+
+    for source_name, data, summary, error in _run_concurrent(tasks):
+        results[source_name] = data
+        if summary is not None:
+            summaries.append(summary)
+        if error is not None:
+            errors.append(error)
+
     # Build formatted output string
     output = "# Unified Drug Search Results\n\n"
     output += f"## Search Term: '{search_term}'\n\n"

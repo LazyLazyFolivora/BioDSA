@@ -27,6 +27,66 @@ from biodsa.tools.proteinatlas import (
     get_pathology_data
 )
 
+
+# ================================================
+# Concurrent source-search helpers
+# ================================================
+
+def _run_concurrent(tasks):
+    """Run ``(source_name, callable, empty_default)`` tasks concurrently.
+
+    Each callable returns ``(data, summary)`` and may raise.  On success the
+    source contributes its data and summary; on error it contributes the
+    ``empty_default`` and an error string.  Results are returned in submission
+    order so downstream output stays deterministic.
+    """
+    if not tasks:
+        return []
+    order = [name for name, _, _ in tasks]
+    collected = {}
+    with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
+        futures = {executor.submit(fn): (name, empty) for name, fn, empty in tasks}
+        for future in as_completed(futures):
+            name, empty = futures[future]
+            try:
+                data, summary = future.result()
+                collected[name] = (data, summary, None)
+            except Exception as e:
+                logging.error(f"{name} search failed: {e}")
+                collected[name] = (empty, None, f"{name}: {str(e)}")
+    return [
+        (name, collected[name][0], collected[name][1], collected[name][2])
+        for name in order
+    ]
+
+
+def _search_opentargets_target(search_term: str, limit_per_source: int):
+    df, summary = opentargets_search_targets(query=search_term, size=limit_per_source)
+    return df, f"**Open Targets:** Found {len(df)} therapeutic targets"
+
+
+def _search_kegg_pathways(search_term: str, limit_per_source: int):
+    kegg_client = KEGGClient()
+    pathway_results = kegg_client.search_pathways(search_term, max_results=limit_per_source)
+    return pathway_results, f"**KEGG Pathways:** Found {len(pathway_results)} pathways"
+
+
+def _search_kegg_genes(search_term: str, limit_per_source: int):
+    kegg_client = KEGGClient()
+    gene_results = kegg_client.search_genes(search_term, max_results=limit_per_source)
+    return gene_results, f"**KEGG Genes:** Found {len(gene_results)} genes"
+
+
+def _search_gene_ontology(search_term: str, limit_per_source: int):
+    df, summary = search_go_terms(query=search_term, limit=limit_per_source)
+    return df, f"**Gene Ontology:** Found {len(df)} GO terms"
+
+
+def _search_proteinatlas(search_term: str, limit_per_source: int):
+    df = search_cancer_markers(cancer=search_term, max_results=limit_per_source)
+    return df, f"**Human Protein Atlas:** Found {len(df)} proteins"
+
+
 # ================================================
 # Unified Search Function
 # ================================================
@@ -80,71 +140,28 @@ def search_targets_unified(
     results = {}
     summaries = []
     errors = []
-    
-    # Search Open Targets (therapeutic targets)
+
+    # Build the list of sources to search; each entry is
+    # (source_name, callable, empty_default) and runs concurrently below.
+    tasks = []
     if 'opentargets' in sources:
-        try:
-            df, summary = opentargets_search_targets(
-                query=search_term,
-                size=limit_per_source
-            )
-            results['opentargets'] = df
-            summaries.append(f"**Open Targets:** Found {len(df)} therapeutic targets")
-        except Exception as e:
-            logging.error(f"Open Targets search failed: {e}")
-            results['opentargets'] = pd.DataFrame()
-            errors.append(f"Open Targets: {str(e)}")
-    
-    # Search KEGG Pathways
+        tasks.append(("opentargets", lambda: _search_opentargets_target(search_term, limit_per_source), pd.DataFrame()))
     if 'kegg_pathways' in sources:
-        try:
-            kegg_client = KEGGClient()
-            pathway_results = kegg_client.search_pathways(search_term, max_results=limit_per_source)
-            results['kegg_pathways'] = pathway_results  # List of dicts
-            summaries.append(f"**KEGG Pathways:** Found {len(pathway_results)} pathways")
-        except Exception as e:
-            logging.error(f"KEGG pathway search failed: {e}")
-            results['kegg_pathways'] = []
-            errors.append(f"KEGG Pathways: {str(e)}")
-    
-    # Search KEGG Genes
+        tasks.append(("kegg_pathways", lambda: _search_kegg_pathways(search_term, limit_per_source), []))
     if 'kegg_genes' in sources:
-        try:
-            kegg_client = KEGGClient()
-            gene_results = kegg_client.search_genes(search_term, max_results=limit_per_source)
-            results['kegg_genes'] = gene_results  # List of dicts
-            summaries.append(f"**KEGG Genes:** Found {len(gene_results)} genes")
-        except Exception as e:
-            logging.error(f"KEGG gene search failed: {e}")
-            results['kegg_genes'] = []
-            errors.append(f"KEGG Genes: {str(e)}")
-    
-    # Search Gene Ontology
+        tasks.append(("kegg_genes", lambda: _search_kegg_genes(search_term, limit_per_source), []))
     if 'gene_ontology' in sources:
-        try:
-            df, summary = search_go_terms(
-                query=search_term,
-                limit=limit_per_source
-            )
-            results['gene_ontology'] = df
-            summaries.append(f"**Gene Ontology:** Found {len(df)} GO terms")
-        except Exception as e:
-            logging.error(f"Gene Ontology search failed: {e}")
-            results['gene_ontology'] = pd.DataFrame()
-            errors.append(f"Gene Ontology: {str(e)}")
-    
-    # Search Human Protein Atlas
+        tasks.append(("gene_ontology", lambda: _search_gene_ontology(search_term, limit_per_source), pd.DataFrame()))
     if 'proteinatlas' in sources:
-        try:
-            # Use cancer marker search
-            df = search_cancer_markers(cancer=search_term, max_results=limit_per_source)
-            results['proteinatlas'] = df
-            summaries.append(f"**Human Protein Atlas:** Found {len(df)} proteins")
-        except Exception as e:
-            logging.error(f"Human Protein Atlas search failed: {e}")
-            results['proteinatlas'] = pd.DataFrame()
-            errors.append(f"Human Protein Atlas: {str(e)}")
-    
+        tasks.append(("proteinatlas", lambda: _search_proteinatlas(search_term, limit_per_source), pd.DataFrame()))
+
+    for source_name, data, summary, error in _run_concurrent(tasks):
+        results[source_name] = data
+        if summary is not None:
+            summaries.append(summary)
+        if error is not None:
+            errors.append(error)
+
     # Build formatted output string
     output = "# Unified Biological Target Search Results\n\n"
     output += f"## Search Term: '{search_term}'\n"
