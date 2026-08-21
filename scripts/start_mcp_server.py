@@ -22,9 +22,15 @@ import logging
 import os
 import sys
 
+from dotenv import load_dotenv
+
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
+
+# Read .env before parse_args() evaluates its os.environ defaults, so the API
+# key and endpoint override can live in a file instead of the shell environment.
+load_dotenv(os.path.join(_project_root, ".env"))
 
 from biodsa.mcp import MCPServerConfig, mcp, init_config
 
@@ -52,8 +58,16 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--api-key",
-        default=os.environ.get("BIODSA_LLM_API_KEY", "not-needed"),
-        help="API key (usually not needed for local vLLM).",
+        default=os.environ.get("BIODSA_LLM_API_KEY")
+        or os.environ.get("DEEPSEEK_API_KEY")
+        or "not-needed",
+        help="API key (not needed for local vLLM). Falls back to DEEPSEEK_API_KEY.",
+    )
+    p.add_argument(
+        "--api-base",
+        default=os.environ.get("BIODSA_LLM_API_BASE"),
+        help="OpenAI-compatible base URL override (e.g. 'https://api.deepseek.com' "
+             "for DeepSeek). Omit to use http://<llm-host>:<llm-port>/v1.",
     )
     p.add_argument(
         "--mcp-port", "-p",
@@ -98,6 +112,7 @@ def main() -> None:
         llm_port=args.llm_port,
         model_name=args.model,
         api_key=args.api_key,
+        api_base=args.api_base,
         mcp_port=args.mcp_port,
         tool_timeout=args.tool_timeout,
         llm_timeout=args.llm_timeout,

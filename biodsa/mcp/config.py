@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -36,7 +37,17 @@ class MCPServerConfig:
     raising this does not multiply into a worst case that outlives the caller.
     """
 
+    api_base: Optional[str] = None
+    """Optional OpenAI-compatible base URL override.
+
+    When set (e.g. ``https://api.deepseek.com`` for DeepSeek), it replaces the
+    local ``http://<llm_host>:<llm_port>/v1`` default, so cloud OpenAI-compatible
+    providers work without a self-hosted vLLM box.
+    """
+
     @property
     def endpoint(self) -> str:
-        """Full vLLM OpenAI-compatible endpoint URL."""
+        """OpenAI-compatible base URL passed to LangChain's ChatOpenAI."""
+        if self.api_base:
+            return self.api_base
         return f"http://{self.llm_host}:{self.llm_port}/v1"
