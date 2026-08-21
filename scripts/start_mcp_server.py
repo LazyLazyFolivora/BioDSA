@@ -42,8 +42,9 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--model", "-m",
-        required=True,
-        help="Model name as registered in vLLM (e.g. 'meta-llama/Llama-3.1-8B-Instruct').",
+        default=os.environ.get("BIODSA_LLM_MODEL"),
+        help="Model name. Defaults to BIODSA_LLM_MODEL "
+             "(e.g. 'deepseek-v4-pro' for DeepSeek).",
     )
     p.add_argument(
         "--llm-host",
@@ -107,6 +108,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if not args.model:
+        logging.error("Model name is required: pass --model or set BIODSA_LLM_MODEL in .env")
+        sys.exit(2)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),

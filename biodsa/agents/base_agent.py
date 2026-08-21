@@ -352,7 +352,11 @@ class BaseAgent():
         if model_kwargs is None:
             model_kwargs = self.model_kwargs or {}
         else:
-            model_kwargs = self._set_model_kwargs(model_name)
+            # Layer provider defaults underneath the caller's explicit kwargs so
+            # the caller wins on conflicts. Previously this branch replaced the
+            # passed kwargs with _set_model_kwargs(), which silently dropped the
+            # user's config (e.g. thinking={"type": "disabled"} for DeepSeek).
+            model_kwargs = {**self._set_model_kwargs(model_name), **model_kwargs}
         if api_type is None:
             api_type = self.api_type
         if api_key is None:

@@ -444,7 +444,8 @@ async def tool_meta_analysis(research_question: str, target_outcomes: Optional[L
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="BioDSA MCP Server (official SDK)")
-    p.add_argument("--model", "-m", required=True, help="Model name in vLLM.")
+    p.add_argument("--model", "-m", default=os.environ.get("BIODSA_LLM_MODEL"),
+                   help="Model name (defaults to BIODSA_LLM_MODEL, e.g. 'deepseek-v4-pro').")
     p.add_argument("--llm-host", default=os.environ.get("BIODSA_LLM_HOST", "localhost"))
     p.add_argument("--llm-port", type=int, default=int(os.environ.get("BIODSA_LLM_PORT", "8000")))
     p.add_argument("--api-key", default=os.environ.get("BIODSA_LLM_API_KEY")
@@ -742,6 +743,9 @@ def _serve_streamable_http(app, args):
 
 def main() -> None:
     args = parse_args()
+    if not args.model:
+        logging.error("Model name is required: pass --model or set BIODSA_LLM_MODEL in .env")
+        sys.exit(2)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),

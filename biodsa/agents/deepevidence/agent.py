@@ -187,7 +187,7 @@ class DeepEvidenceAgent(BaseAgent):
         """
         A function to call the breadth-first search workflow.
         """
-        print("called: bfs_workflow")
+        logging.info("bfs_workflow start")
         parent_graph_message = state.messages[-1]
         parent_graph_message_tool_calls = parent_graph_message.tool_calls
         # find the one with name "go_breadth_first_search"
@@ -216,10 +216,12 @@ class DeepEvidenceAgent(BaseAgent):
         }
 
         # invoke the subgraph for breadth-first search
+        _bfs_start = time.time()
         bfs_outputs = self.bfs_workflow.invoke(
             inputs,
             config=config
         )
+        logging.info("bfs_workflow done: %.2fs", time.time() - _bfs_start)
 
         # transform the outputs so it is aligned with the DeepEvidenceAgentState's format
         # in the format of ToolMessage
@@ -246,7 +248,7 @@ class DeepEvidenceAgent(BaseAgent):
         """
         A function to call the depth-first search workflow.
         """
-        print("called: dfs_workflow")
+        logging.info("dfs_workflow start")
         parent_graph_message = state.messages[-1]
         parent_graph_message_tool_calls = parent_graph_message.tool_calls
         # find the one with name "go_depth_first_search"
@@ -271,7 +273,9 @@ class DeepEvidenceAgent(BaseAgent):
             "current_round": 0,
         }
         # invoke the subgraph for depth-first search
+        _dfs_start = time.time()
         dfs_outputs = self.dfs_workflow.invoke(inputs, config=config)
+        logging.info("dfs_workflow done: %.2fs", time.time() - _dfs_start)
         all_messages = dfs_outputs['messages']
         final_response = all_messages[-1].content
 
@@ -755,6 +759,17 @@ class DeepEvidenceAgent(BaseAgent):
             "free_graph_turns": free_graph_turns,
         }
 
+    def _run_tool_timed(self, tool_name: str, called_tool: Any, tool_input: Dict[str, Any]) -> Any:
+        """Execute one tool call and log its elapsed time."""
+        start = time.time()
+        try:
+            output = called_tool._run(**tool_input)
+            logging.info("tool done: %s %.2fs", tool_name, time.time() - start)
+            return output
+        except Exception as e:
+            logging.warning("tool failed: %s %.2fs: %s", tool_name, time.time() - start, e)
+            raise
+
     def _tool_node(self, state: DeepEvidenceAgentState, config: RunnableConfig) -> DeepEvidenceAgentState:
         """
         A function to execute the tool node for the orchestrator agent.
@@ -772,7 +787,7 @@ class DeepEvidenceAgent(BaseAgent):
                 available_tools = self._get_tools_for_orchestrator_agent(allowed_knowledge_bases=allowed_knowledge_bases)
                 available_tools_dict = {tool.name: tool for tool in available_tools}
                 called_tool = available_tools_dict[tool_name]
-                tool_output = called_tool._run(**tool_input)
+                tool_output = self._run_tool_timed(tool_name, called_tool, tool_input)
                 response = ToolMessage(
                         content=tool_output,
                         name=tool_name,
@@ -805,7 +820,7 @@ class DeepEvidenceAgent(BaseAgent):
                 available_tools = self._get_tools_for_bfs_agent(knowledge_bases=knowledge_bases)
                 available_tools_dict = {tool.name: tool for tool in available_tools}
                 called_tool = available_tools_dict[tool_name]
-                tool_output = called_tool._run(**tool_input)
+                tool_output = self._run_tool_timed(tool_name, called_tool, tool_input)
                 response = ToolMessage(
                     content=tool_output,
                     name=tool_name,
@@ -838,7 +853,7 @@ class DeepEvidenceAgent(BaseAgent):
                 available_tools = self._get_tools_for_dfs_agent(knowledge_bases=knowledge_bases)
                 available_tools_dict = {tool.name: tool for tool in available_tools}
                 called_tool = available_tools_dict[tool_name]
-                tool_output = called_tool._run(**tool_input)
+                tool_output = self._run_tool_timed(tool_name, called_tool, tool_input)
                 response = ToolMessage(
                     content=tool_output,
                     name=tool_name,

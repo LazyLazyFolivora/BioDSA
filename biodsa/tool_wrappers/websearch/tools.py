@@ -4,11 +4,15 @@ Web Search Tool
 from typing import Optional, Type
 from pydantic import BaseModel, Field
 from langchain_core.tools import BaseTool
+import logging
 import os
+import time
 
 from .agentic import web_search
 from .tavily import tavily_search
 from biodsa.sandbox.sandbox_interface import ExecutionSandboxWrapper
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "WebSearchTool",
@@ -101,6 +105,7 @@ class WebSearchTool(BaseTool):
         """
         super().__init__()
         self.backend = (backend or os.getenv(_BACKEND_ENV, _BACKEND_ANTHROPIC)).lower()
+        logger.info("WebSearchTool backend=%s", self.backend)
         self.model_name = model_name
         self.max_search_uses = max_search_uses
         self.search_depth = search_depth
@@ -136,6 +141,7 @@ class WebSearchTool(BaseTool):
             - A synthesized response with inline citations
             - References section with full citation details
         """
+        start = time.time()
         try:
             if self.backend == _BACKEND_TAVILY:
                 search_results, formatted_response = tavily_search(
@@ -173,9 +179,17 @@ class WebSearchTool(BaseTool):
             output_parts.append(formatted_response)
             output_parts.append("=" * 80)
 
+            logger.info(
+                "WebSearchTool backend=%s query=%r elapsed=%.2fs",
+                self.backend, query, time.time() - start,
+            )
             return "\n".join(output_parts)
 
         except Exception as e:
+            logger.warning(
+                "WebSearchTool backend=%s query=%r failed elapsed=%.2fs: %s",
+                self.backend, query, time.time() - start, e,
+            )
             return f"Error executing web search: {str(e)}"
 
 
