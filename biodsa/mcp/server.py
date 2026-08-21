@@ -187,7 +187,8 @@ def biodsa_trialgpt_match(patient_note: str) -> str:
             agent.sandbox = None
 
 
-@mcp.tool()
+# Temporarily unexposed (gene analysis is too slow to expose right now).
+# Re-enable by restoring the @mcp.tool() decorator on this function.
 def biodsa_gene_analysis(gene_set: str) -> str:
     """Gene set analysis with self-verification (GeneAgent).
 

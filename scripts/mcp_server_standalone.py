@@ -529,25 +529,6 @@ def _build_mcp_app():
                 },
             ),
             Tool(
-                name="biodsa_gene_analysis",
-                description="Gene set analysis with self-verification (enrichment + literature + database verification). "
-                "Records a knowledge graph of the gene, pathway and disease links found during verification.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "gene_set": {
-                            "type": "string",
-                            "description": "Comma-separated gene symbols. E.g. 'ERBB2,EGFR,KRAS,TP53'.",
-                        },
-                        "session_id": {
-                            "type": "string",
-                            "description": "Optional client-generated session ID. Isolates this run's knowledge graph and tags its graph event log.",
-                        },
-                    },
-                    "required": ["gene_set"],
-                },
-            ),
-            Tool(
                 name="biodsa_trialgpt_match",
                 description="Match a patient to clinical trials using TrialGPT. "
                 "Two-stage: extract medical info from note → rank candidate trials by eligibility with rationale.",
@@ -630,7 +611,6 @@ def _build_mcp_app():
         handlers = {
             "biodsa_deepevidence_research": tool_deepevidence_research,
             "biodsa_systematic_review": tool_systematic_review,
-            "biodsa_gene_analysis": tool_gene_analysis,
             "biodsa_trialgpt_match": tool_trialgpt_match,
             "biodsa_clinical_risk": tool_clinical_risk,
             "biodsa_dswizard_analyze": tool_dswizard_analyze,
@@ -689,7 +669,7 @@ def _serve_sse(app, args):
 
     logging.info("BioDSA MCP server starting on http://%s:%d (SSE)", args.mcp_host, args.mcp_port)
     logging.info("Model: %s  |  LLM endpoint: %s", args.model, _config.endpoint)
-    logging.info("Tools: deepevidence_research, systematic_review, gene_analysis, trialgpt_match, clinical_risk, dswizard_analyze, meta_analysis")
+    logging.info("Tools: deepevidence_research, systematic_review, trialgpt_match, clinical_risk, dswizard_analyze, meta_analysis")
 
     uvicorn.run(starlette, host=args.mcp_host, port=args.mcp_port, log_level=args.log_level.lower())
 
@@ -736,7 +716,7 @@ def _serve_streamable_http(app, args):
     logging.info("BioDSA MCP server starting on http://%s:%d (Streamable HTTP)", args.mcp_host, args.mcp_port)
     logging.info("Model: %s  |  LLM endpoint: %s", args.model, _config.endpoint)
     logging.info("Endpoint: POST http://%s:%d/mcp", args.mcp_host, args.mcp_port)
-    logging.info("Tools: deepevidence_research, systematic_review, gene_analysis, trialgpt_match, clinical_risk, dswizard_analyze, meta_analysis")
+    logging.info("Tools: deepevidence_research, systematic_review, trialgpt_match, clinical_risk, dswizard_analyze, meta_analysis")
 
     uvicorn.run(starlette, host=args.mcp_host, port=args.mcp_port, log_level=args.log_level.lower())
 
