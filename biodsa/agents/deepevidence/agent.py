@@ -593,6 +593,21 @@ class DeepEvidenceAgent(BaseAgent):
             parallel_tool_calls=False,
         )
 
+        # The orchestrator is designed to take exactly one action per round
+        # (parallel_tool_calls=False). Some providers (e.g. DeepSeek) ignore that
+        # flag and return several tool_calls in one message; the router below and
+        # the responder nodes only answer the first, leaving the rest unanswered,
+        # which makes the next LLM call fail with OpenAI 400 "insufficient tool
+        # messages following tool_calls message". Keep only the first call so every
+        # emitted tool_call gets a matching ToolMessage.
+        if response.tool_calls is not None and len(response.tool_calls) > 1:
+            logging.warning(
+                "orchestrator returned %d tool_calls; keeping only the first (%s)",
+                len(response.tool_calls),
+                response.tool_calls[0].get("name"),
+            )
+            response.tool_calls = response.tool_calls[:1]
+
         # parse the response to get if any bfs or dfs workflow should be started
         subagent_knowledge_bases: List[str] = []
         search_targets: List[str] = []
