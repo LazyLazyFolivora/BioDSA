@@ -179,8 +179,21 @@ one that fits and send it alone: `CHEMICAL/DRUG` is not a type.
 - Evidence-level: SUPPORTS, REFUTES, INCONCLUSIVE_FOR, CITES
 - Provenance: DERIVED_FROM_KG:<name@version>
 
+### Entity Introduction
+Every entity's FIRST observation must be a one-sentence Chinese introduction of the
+entity itself (what it IS), no more than 200 characters:
+- GENE/PROTEIN -> its function and role; DRUG/CHEMICAL -> its mechanism or indication;
+  DISEASE/PHENOTYPE -> its definition; PATHWAY -> the process it mediates; etc.
+- If you already retrieved a knowledge-base summary for this entity (from search_* /
+  fetch_*_details), compress and translate it into Chinese within 200 characters.
+- If no knowledge-base summary is available, write the introduction from your own
+  knowledge in Chinese.
+Write this introduction when you FIRST create the entity; the observations that follow
+are the evidence summaries described below.
+
 ### Evidence Summaries
-- Use short factual sentences (≤30 words) capturing method, context, and numeric result if any.
+- Applies to observations AFTER the introduction: use short factual sentences (≤30 words)
+  capturing method, context, and numeric result if any.
 - Context (species, cell type, assay) should **stay inside the observation**, not as separate context nodes unless reused by multiple findings.
 
 ## 2. Identifier & Naming Rules
